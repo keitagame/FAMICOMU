@@ -1,0 +1,1197 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <title>NES Emulator (JS, skeleton)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: ui-sans-serif, system-ui; margin: 16px; }
+    header { display:flex; gap:12px; align-items:center; margin-bottom:12px; }
+    canvas { image-rendering: pixelated; border:1px solid #ccc; background:#000; }
+    .row { display:flex; gap:12px; align-items:center; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    small { opacity:.7; }
+  </style>
+</head>
+<body>
+  <header>
+    <input id="rom" type="file" accept=".nes" />
+    <button id="start" disabled>Start</button>
+    <div class="mono" id="status">No ROM</div>
+  </header>
+  <div class="row">
+    <canvas id="screen" width="256" height="240"></canvas>
+    <div>
+      <div><b>FPS:</b> <span id="fps">0</span></div>
+      <div><b>CPU PC:</b> <span id="pc" class="mono">0000</span></div>
+      <div><b>Cycles:</b> <span id="cyc" class="mono">0</span></div>
+      <small>Skeleton: Mapper0, iNES, PPU frame timing + NMI, CPU bus/IRQs, opcode hooks</small>
+    </div>
+  </div>
+
+  <script type="module">
+    // ---------- Utils ----------
+    const u8  = (n) => n & 0xFF;
+    const u16 = (n) => n & 0xFFFF;
+    const lo  = (n) => n & 0xFF;
+    const hi  = (n) => (n >> 8) & 0xFF;
+const NES_PALETTE = [
+  0x666666FF,0x002A88FF,0x1412A7FF,0x3B00A4FF,0x5C007EFF,0x6E0040FF,0x6C0600FF,0x561D00FF,
+  0x333500FF,0x0B4800FF,0x005200FF,0x004F08FF,0x00404DFF,0x000000FF,0x000000FF,0x000000FF,
+  0xADADADFF,0x155FD9FF,0x4240FFFF,0x7527FEFF,0xA01ACCFF,0xB71E7BFF,0xB53120FF,0x994E00FF,
+  0x6B6D00FF,0x388700FF,0x0C9300FF,0x008F32FF,0x007C8DFF,0x000000FF,0x000000FF,0x000000FF,
+  0xFFFFFF,0x64B0FFFF,0x9290FFFF,0xC676FFFF,0xF26AFF,0xFF6ECCFF,0xFF8170FF,0xEA9E22FF,
+  0xBCBE00FF,0x88D800FF,0x5CE430FF,0x45E082FF,0x48CDDEFF,0x4F4F4FFF,0x000000FF,0x000000FF,
+  0xFFFFFFFF,0xC0DFFFFF,0xD3D2FFFF,0xE8C8FFFF,0xFBC2FFFF,0xFFC4EAFF,0xFFCCC5FF,0xF7D8A5FF,
+  0xE4E594FF,0xCFEF96FF,0xBDF4ABFF,0xB3F3CCFF,0xB5EBF2FF,0xB8B8B8FF,0x000000FF,0x000000FF
+];
+class IMapper {
+  constructor(cart) { this.cart = cart; }
+  cpuRead(addr){ return 0; }
+  cpuWrite(addr,val){}
+  ppuRead(addr){ return 0; }
+  ppuWrite(addr,val){}
+  mirroring(){ return this.cart.mirror; } // 0: H, 1: V
+}
+class Mapper0 extends IMapper {
+  constructor(cart){
+    super(cart);
+    this.prg = cart.prg;
+    this.chr = cart.chr || new Uint8Array(0x2000);
+    this.prgSize = this.prg.length;
+  }
+  cpuRead(addr){
+   if (addr < 0x8000) return 0;
+  let a = addr - 0x8000;
+  if (this.prgSize === 0x4000) a %= 0x4000; // 16KBミラー
+  return this.prg[a];
+  }
+  
+  
+  cpuWrite(addr,val){ /* no regs */ }
+  ppuRead(addr){
+    if (addr < 0x2000) return this.chr[addr];
+    return 0;
+  }
+  ppuWrite(addr,val){
+    if (addr < 0x2000 && this.cart.chrIsRAM) this.chr[addr] = val & 0xFF;
+  }
+}
+class Mapper2 extends IMapper {
+  constructor(cart){
+    super(cart);
+    this.prg = cart.prg;
+    this.chr = cart.chr || new Uint8Array(0x2000);
+    this.chrIsRAM = cart.chrIsRAM;
+    this.bank = 0; // switchable at $8000-$BFFF
+    this.fixedBank = (this.prg.length / 0x4000) - 1; // last bank at $C000-$FFFF
+  }
+  cpuRead(addr){
+    if (addr < 0x8000) return 0;
+    if (addr < 0xC000){
+      const base = (this.bank & 0x0F) * 0x4000;
+      return this.prg[base + (addr - 0x8000)];
+    } else {
+      const base = this.fixedBank * 0x4000;
+      return this.prg[base + (addr - 0xC000)];
+    }
+  }
+  cpuWrite(addr,val){
+    if (addr >= 0x8000) this.bank = val & 0x0F;
+  }
+  ppuRead(addr){ if (addr < 0x2000) return this.chr[addr]; return 0; }
+  ppuWrite(addr,val){ if (this.chrIsRAM && addr < 0x2000) this.chr[addr]=val; }
+}
+class Mapper3 extends IMapper {
+  constructor(cart){
+    super(cart);
+    this.prg = cart.prg;
+    this.chr = cart.chr || new Uint8Array(0x2000);
+    this.chrIsRAM = cart.chrIsRAM;
+    this.chrBank = 0;
+  }
+  cpuRead(addr){
+    if (addr < 0x8000) return 0;
+    const a = addr - 0x8000;
+    if (this.prg.length === 0x4000){
+      // mirror 16K
+      return this.prg[a & 0x3FFF];
+    }
+    return this.prg[a];
+  }
+  cpuWrite(addr,val){ if (addr >= 0x8000) this.chrBank = val & 0x03; }
+  ppuRead(addr){
+    if (addr < 0x2000){
+      const base = (this.chrBank & 0x03) * 0x2000; // 8KB bank (一部CNROMは4KB、ROMに依存)
+      return this.chr[base + addr];
+    }
+    return 0;
+  }
+  ppuWrite(addr,val){ if (this.chrIsRAM && addr < 0x2000) this.chr[addr]=val; }
+}
+class Mapper1 extends IMapper {
+  constructor(cart){
+    super(cart);
+    this.prg = cart.prg;
+    this.chr = cart.chr || new Uint8Array(0x2000);
+    this.chrIsRAM = cart.chrIsRAM;
+    this.shift = 0x10; // bit4=1 means empty
+    this.ctrl = 0x0C; // default
+    this.chrBank0 = 0;
+    this.chrBank1 = 0;
+    this.prgBank = 0;
+  }
+  resetShift(){ this.shift = 0x10; }
+  applyRegister(addr, data){
+    const reg = (addr >> 13) & 3; // 0:ctrl,1:CHR0,2:CHR1,3:PRG
+    if (reg === 0){
+      this.ctrl = data & 0x1F;
+    } else if (reg === 1){
+      this.chrBank0 = data & 0x1F;
+    } else if (reg === 2){
+      this.chrBank1 = data & 0x1F;
+    } else {
+      this.prgBank = data & 0x0F;
+    }
+  }
+  cpuWrite(addr,val){
+    if (addr < 0x8000) return;
+    if (val & 0x80){ // reset
+      this.resetShift();
+      this.ctrl |= 0x0C;
+      return;
+    }
+    const carry = val & 1;
+    if (this.shift & 1){
+      // 5th bit
+      const data = ((this.shift >> 1) | (carry << 4)) & 0x1F;
+      this.applyRegister(addr, data);
+      this.resetShift();
+    } else {
+      this.shift = (carry << 4) | (this.shift >> 1);
+    }
+  }
+  cpuRead(addr){
+    if (addr < 0x8000) return 0;
+    const prgMode = (this.ctrl >> 2) & 3;
+    const bankSize = (prgMode >= 2) ? 0x4000 : 0x8000;
+    let bankIndex, base;
+    if (bankSize === 0x8000){
+      bankIndex = (this.prgBank & 0x0E) >> 1;
+      base = bankIndex * 0x8000;
+      return this.prg[base + (addr - 0x8000)];
+    }
+    // 16Kモード
+    if (prgMode === 2){
+      // first bank fixed at $8000
+      bankIndex = 0;
+      if (addr < 0xC000) base = 0;
+      else base = this.prgBank * 0x4000;
+    } else if (prgMode === 3){
+      // last bank fixed at $C000
+      if (addr < 0xC000) base = this.prgBank * 0x4000;
+      else base = (this.prg.length/0x4000 - 1) * 0x4000;
+    } else {
+      // prgMode 0/1 32K already handled
+      base = 0;
+    }
+    const off = (addr & 0x3FFF);
+    return this.prg[base + off];
+  }
+  ppuRead(addr){
+    if (addr >= 0x2000) return 0;
+    const chrMode = (this.ctrl >> 4) & 1;
+    if (!chrMode){
+      // 8KB
+      const base = (this.chrBank0 & 0x1E) * 0x1000;
+      return this.chr[base + addr];
+    } else {
+      // 4KB banks
+      if (addr < 0x1000){
+        const base = (this.chrBank0) * 0x1000;
+        return this.chr[base + addr];
+      } else {
+        const base = (this.chrBank1) * 0x1000;
+        return this.chr[base + (addr - 0x1000)];
+      }
+    }
+  }
+  ppuWrite(addr,val){ if (this.chrIsRAM && addr < 0x2000) this.chr[addr]=val; }
+  mirroring(){
+    const m = this.ctrl & 3;
+    // 0:single lower,1:single upper,2:vertical,3:horizontal
+    if (m === 2) return 1;
+    if (m === 3) return 0;
+    // 単一ミラーはここではvertical扱いにフォールバック（簡略）
+    return 1;
+  }
+}
+    // ---------- Cartridge (iNES, Mapper 0 only) ----------
+    class Cartridge {
+      constructor(bytes) {
+        this.bytes = bytes;
+        this.valid = false;
+        this.mapper = 0;
+        this.prg = null;
+        this.chr = null;
+        this.mirror = 0; // 0: horizontal, 1: vertical
+        this.parse();
+      }
+      parse() {
+        const b = this.bytes;
+    if (!(b[0]===0x4E && b[1]===0x45 && b[2]===0x53 && b[3]===0x1A)) return;
+    const prgBanks = b[4], chrBanks = b[5];
+    const flag6 = b[6], flag7 = b[7];
+    this.mirror = flag6 & 0x01;
+    const mapperLow = (flag6 >> 4);
+    const mapperHigh = (flag7 & 0xF0);
+    this.mapper = mapperLow | mapperHigh;
+    let offset = 16;
+    if (flag6 & 0x04) offset += 512;
+    const prgSize = prgBanks * 16_384;
+    const chrSize = chrBanks * 8_192;
+    this.prg = b.slice(offset, offset + prgSize);
+    offset += prgSize;
+    if (chrBanks === 0){
+      this.chr = new Uint8Array(0x2000);
+      this.chrIsRAM = true;
+    } else {
+      this.chr = b.slice(offset, offset + chrSize);
+      this.chrIsRAM = false;
+    }
+    // Mapper 0/1/2/3を一旦許可
+    this.valid = [0,1,2,3].includes(this.mapper);
+      }
+    }
+
+    // ---------- PPU (skeleton: VRAM, OAM, regs, timing, NMI) ----------
+    class PPU {
+      constructor(bus) {
+        this.bus = bus;
+        // PPU memory
+        this.vram = new Uint8Array(0x800);   // nametables (2KB)
+        this.oam  = new Uint8Array(256);     // OAM
+        this.pal  = new Uint8Array(32);      // palette RAM
+        // Registers
+        this.PPUCTRL = 0;   // $2000
+        this.PPUMASK = 0;   // $2001
+        this.PPUSTATUS = 0xA0; // $2002 (VBlank=bit7), low bits power-up garbage-ish
+        this.OAMADDR = 0;   // $2003
+        this.scrollTemp = 0; // t
+        this.scrollV = 0;    // v
+        this.writeToggle = 0; // w
+        this.ppuAddr = 0;
+        this.ppuDataBuffer = 0;
+         this.v = 0; // current VRAM addr (15 bits)
+    this.t = 0; // temp VRAM addr
+    this.x = 0; // fine X (3 bits)
+    this.w = 0;
+        // Timing
+        this.cycle = 0;
+        this.scanline = 0;
+        this.frame = 0;
+        this.frameReady = false;
+        this.nmiOccurred = false;
+        this.framebuffer = new Uint32Array(256 * 240);
+      }
+      renderFrame() {
+  // 背景描画のみ
+  for (let ty = 0; ty < 30; ty++) { // 30タイル縦
+    for (let tx = 0; tx < 32; tx++) { // 32タイル横
+      const ntAddr = 0x2000 + ty * 32 + tx;
+      const tileIndex = this.ppuRead(ntAddr);
+      const attrAddr = 0x23C0 + ((ty >> 2) * 8) + (tx >> 2);
+      const attr = this.ppuRead(attrAddr);
+      const shift = ((ty & 2) << 1) | (tx & 2);
+      const paletteIndex = (attr >> shift) & 0x03;
+
+      // パターンテーブル0 ($0000〜)
+      const tileBase = 0x0000 + tileIndex * 16;
+      for (let row = 0; row < 8; row++) {
+        const lo = this.ppuRead(tileBase + row);
+        const hi = this.ppuRead(tileBase + row + 8);
+        for (let col = 0; col < 8; col++) {
+          const bit = 7 - col;
+          const colorIndex = ((lo >> bit) & 1) | (((hi >> bit) & 1) << 1);
+          const finalIndex = this.ppuRead(0x3F00 + (paletteIndex << 2) + colorIndex) & 0x3F;
+          const px = tx * 8 + col;
+          const py = ty * 8 + row;
+          this.framebuffer[py * 256 + px] = NES_PALETTE[finalIndex];
+        }
+      }
+    }
+  }
+}
+      reset() {
+        this.PPUCTRL = this.PPUMASK = 0;
+        this.PPUSTATUS &= 0x7F;
+        this.writeToggle = 0;
+        this.cycle = this.scanline = 0;
+        this.frameReady = false;
+        this.nmiOccurred = false;
+      }
+getPaletteRGBA(idx){ return NES_PALETTE[idx & 0x3F] || 0x000000FF; }
+      // CPU reads/writes to PPU regs
+      cpuRead(addr) {
+        switch (addr & 7) {
+          case 2: { // PPUSTATUS
+            const val = this.PPUSTATUS;
+            this.PPUSTATUS &= 0x7F; // clear VBlank
+            this.writeToggle = 0;
+            return val;
+          }
+          case 4: return this.oam[this.OAMADDR];
+          case 7: { // PPUDATA
+            if (!this.mapper) return 0;
+            const val = this.ppuRead(this.ppuAddr);
+            const ret = (this.ppuAddr & 0x3F00) === 0x3F00 ? val : this.ppuDataBuffer;
+            this.ppuDataBuffer = val;
+            this.ppuAddr = (this.ppuAddr + this.vramIncrement()) & 0x3FFF;
+            
+            return ret;
+          }
+          default: return 0;
+        }
+      }
+      cpuWrite(addr, value) {
+        const v = value & 0xFF;
+        switch (addr & 7){
+      case 0: // PPUCTRL
+        this.PPUCTRL = v;
+        this.t = (this.t & 0x73FF) | ((v & 0x03) << 10); // nametable bits -> t
+        this.updateNMI();
+        break;
+      case 1: // PPUMASK
+        this.PPUMASK = v;
+        break;
+      case 3: // OAMADDR
+        this.OAMADDR = v;
+        break;
+      case 4: // OAMDATA
+        this.oam[this.OAMADDR] = v; this.OAMADDR = (this.OAMADDR + 1) & 0xFF;
+        break;
+      case 5: // PPUSCROLL
+        if (this.w === 0){
+          this.x = v & 0x07; // fine X
+          this.t = (this.t & 0x7FE0) | (v >> 3); // coarse X
+          this.w = 1;
+        } else {
+          this.t = (this.t & 0x0C1F) | ((v & 0x07) << 12) | ((v & 0xF8) << 2); // fine Y + coarse Y
+          this.w = 0;
+        }
+        break;
+      case 6: // PPUADDR
+        if (this.w === 0){
+          this.t = (this.t & 0x00FF) | ((v & 0x3F) << 8);
+          this.w = 1;
+        } else {
+          this.t = (this.t & 0x7F00) | v;
+          this.v = this.t;
+          this.w = 0;
+        }
+        break;
+      case 7: // PPUDATA
+        this.ppuWrite(this.v & 0x3FFF, v);
+        this.v = (this.v + this.vramIncrement()) & 0x7FFF;
+        break;
+    }
+      }
+      vramIncrement() { return (this.PPUCTRL & 0x04) ? 32 : 1; }
+      updateNMI() {
+        // If VBlank started and NMI enabled, trigger via bus
+        if ((this.PPUCTRL & 0x80) && (this.PPUSTATUS & 0x80) && !this.nmiOccurred) {
+          this.nmiOccurred = true;
+          this.bus.requestNMI();
+        }
+      }
+      ppuRead(addr) {
+        addr &= 0x3FFF;
+        if (addr < 0x2000) {
+          // CHR ROM/RAM from cart
+          return this.bus.cartCHRRead(addr);
+        } else if (addr < 0x3F00) {
+          // Nametable mirroring
+          const nt = this.bus.ntMirror(addr);
+          return this.vram[nt];
+        } else if (addr < 0x4000) {
+          return this.pal[addr & 0x1F];
+        }
+        return 0;
+      }
+      ppuWrite(addr, val) {
+        addr &= 0x3FFF;
+        val &= 0xFF;
+        if (addr < 0x2000) {
+          this.bus.cartCHRWrite(addr, val);
+        } else if (addr < 0x3F00) {
+          const nt = this.bus.ntMirror(addr);
+          this.vram[nt] = val;
+        } else if (addr < 0x4000) {
+          this.pal[addr & 0x1F] = val;
+        }
+      }
+
+      // Advance PPU by 1 cycle; set VBlank and frameReady appropriately
+      step() { this.cycle++;  if (this.cycle > 340) { this.cycle = 0; this.scanline++; if (this.scanline === 241) {  this.PPUSTATUS |= 0x80; this.nmiOccurred = false; this.updateNMI(); } if (this.scanline > 262) { this.scanline = 0; this.PPUSTATUS &= 0x7F; this.frame++; this.frameReady = true; } } }
+
+      consumeFrameFlag() {
+        const f = this.frameReady;
+        this.frameReady = false;
+        return f;
+      }
+      renderBackground(){
+    const showBg = (this.PPUMASK & 0x08) !== 0;
+    const bgPatternBase = (this.PPUCTRL & 0x10) ? 0x1000 : 0x0000;
+
+    // vの内容からスクロールを抽出
+    const fineX = this.x & 0x07;
+    const coarseX = (this.v & 0x001F);
+    const coarseY = (this.v & 0x03E0) >> 5;
+    const fineY = (this.v & 0x7000) >> 12;
+    const nametable = (this.v & 0x0C00);
+
+    if (!showBg){
+      // 背景無効なら塗りつぶし
+      this.framebuffer.fill(NES_PALETTE[this.pal[0] & 0x3F] || 0x000000FF);
+      return;
+    }
+
+    for (let py = 0; py < 240; py++){
+      const y = py + (coarseY * 8 + fineY);
+      const ntY = Math.floor(y / 8) & 0x1F;
+      const tileRow = y & 7;
+
+      for (let px = 0; px < 256; px++){
+        const x = px + (coarseX * 8 + fineX);
+        const ntX = Math.floor(x / 8) & 0x1F;
+        const tileCol = x & 7;
+
+        // nametable ラップ（1画面内スクロール。別画面跨ぎは nametable ビット）
+        const ntAddr = 0x2000 + nametable + ntY * 32 + ntX;
+        const tileIndex = this.ppuRead(ntAddr);
+
+        const attrAddr = 0x23C0 + nametable + ((ntY >> 2) * 8) + (ntX >> 2);
+        const attr = this.ppuRead(attrAddr);
+        const shift = ((ntY & 2) << 1) | (ntX & 2);
+        const palSel = (attr >> shift) & 0x03;
+
+        const tileBase = bgPatternBase + tileIndex * 16;
+        const lo = this.ppuRead(tileBase + tileRow);
+        const hi = this.ppuRead(tileBase + tileRow + 8);
+        const bit = 7 - tileCol;
+        const c0 = (lo >> bit) & 1;
+        const c1 = (hi >> bit) & 1;
+        const colorIndex = (c1 << 1) | c0;
+        const palIndex = this.ppuRead(0x3F00 + (palSel << 2) + colorIndex) & 0x3F;
+
+        const rgba = this.getPaletteRGBA(palIndex);
+        this.framebuffer[py * 256 + px] = rgba;
+      }
+    }
+  }
+
+  // スプライト描画
+  renderSprites(){
+    const showSprites = (this.PPUMASK & 0x10) !== 0;
+    if (!showSprites) return;
+
+    const spriteHeight = (this.PPUCTRL & 0x20) ? 16 : 8;
+    const spritePatternBase = (this.PPUCTRL & 0x08) ? 0x1000 : 0x0000;
+
+    // スプライト0ヒット用の背景非ゼロ判定バッファ
+    const bgOpaque = new Uint8Array(256*240);
+    for (let i=0;i<256*240;i++){
+      const rgba = this.framebuffer[i];
+      bgOpaque[i] = (rgba >>> 24) ? 1 : 1; // ここでは常に1（背景は常に塗られている）
+    }
+
+    for (let i = 0; i < 64; i++){
+      const y = this.oam[i*4 + 0]; // Y-1
+      const tile = this.oam[i*4 + 1];
+      const attr = this.oam[i*4 + 2];
+      const x = this.oam[i*4 + 3];
+
+      const flipH = (attr & 0x40) !== 0;
+      const flipV = (attr & 0x80) !== 0;
+      const priorityBehind = (attr & 0x20) !== 0;
+      const palSel = (attr & 0x03);
+
+      let patternTableBase = spritePatternBase;
+      let tileIndex = tile;
+
+      if (spriteHeight === 16){
+        // 8x16: bit0 selects table, tileIndex ignores bit0
+        patternTableBase = (tile & 1) ? 0x1000 : 0x0000;
+        tileIndex = tile & 0xFE;
+      }
+
+      for (let row = 0; row < spriteHeight; row++){
+        let sprY = y + 1 + row; // OAMはY-1
+        if (sprY < 0 || sprY >= 240) continue;
+
+        const innerRow = flipV ? ((spriteHeight-1) - row) : row;
+        const bankRow = innerRow & 7;
+        const bankAdd = (innerRow & 8) ? 16 : 0;
+        const base = patternTableBase + tileIndex * 16 + bankAdd;
+        const lo = this.ppuRead(base + bankRow);
+        const hi = this.ppuRead(base + bankRow + 8);
+
+        for (let col = 0; col < 8; col++){
+          let sprX = x + (flipH ? col : (7 - col));
+          if (sprX < 0 || sprX >= 256) continue;
+
+          const bit = col;
+          const c0 = (lo >> bit) & 1;
+          const c1 = (hi >> bit) & 1;
+          const colorIndex = (c1 << 1) | c0;
+          if (colorIndex === 0) continue; // 透明
+
+          const palIndex = this.ppuRead(0x3F10 + (palSel << 2) + colorIndex) & 0x3F;
+
+          const idx = sprY * 256 + sprX;
+          if (priorityBehind){
+            // 背景優先
+            // 背景が透明でない場合は上書きしない（簡略）
+          } else {
+            // 前面
+            this.framebuffer[idx] = this.getPaletteRGBA(palIndex);
+          }
+
+          // スプライト0ヒット（背景非ゼロと重なったらフラグON）
+          if (i === 0){
+            // 背景の色インデックス判定を簡略しているので、存在すればヒットさせる
+            this.PPUSTATUS |= 0x40;
+          }
+        }
+      }
+    }
+  }
+   renderFrame(){
+    this.renderBackground();
+    this.renderSprites();
+  }
+    }
+
+    // ---------- CPU 6502 skeleton ----------
+    class CPU {
+      constructor(bus) {
+        this.bus = bus;
+        // Registers
+        this.A = 0; this.X = 0; this.Y = 0;
+        this.S = 0xFD; // Stack pointer
+        this.P = 0x24; // NV-BDIZC (power-up: 0x24 typical)
+        this.PC = 0x0000;
+        this.cycles = 0;
+        this.pendingNMI = false;
+        this.pendingIRQ = false;
+        this.opcodes = this.buildOpcodeTable();
+      }
+      reset() {
+        if (!this.bus.mapper) {
+    throw new Error('Mapper not set before CPU.reset()');
+  }
+        this.A = this.X = this.Y = 0;
+        this.S = 0xFD;
+        this.P = 0x24;
+        this.PC = this.read16(0xFFFC);
+        this.cycles = 0;
+        this.pendingNMI = false;
+        this.pendingIRQ = false;
+      }
+
+      // Flags
+      updateZN(v){ this.P = (this.P & ~0x82) | ((v===0?0x02:0) | (v & 0x80)); }
+setZ(v){ this.P = (this.P & ~0x02) | ((v===0)?0x02:0); }
+setN(v){ this.P = (this.P & ~0x80) | (v & 0x80); }
+get I(){ return (this.P>>2)&1; }
+setC(b){ this.P = (this.P & ~0x01) | (b?1:0); }
+setV(b){ this.P = (this.P & ~0x40) | (b?0x40:0); }
+setD(b){ this.P = (this.P & ~0x08) | (b?0x08:0); }
+setI(b){ this.P = (this.P & ~0x04) | (b?0x04:0); }
+
+      // Memory helpers
+      read(addr){ return this.bus.cpuRead(addr); }
+      write(addr,v){ this.bus.cpuWrite(addr, v); }
+      read16(addr){ const lo = this.read(addr); const hi = this.read((addr+1)&0xFFFF); return (hi<<8)|lo; }
+      read16bug(addr){ const lo = this.read(addr); const a2 = (addr & 0xFF00) | ((addr+1)&0xFF); const hi = this.read(a2); return (hi<<8)|lo; }
+
+      // Stack
+      push(v){ this.write(0x0100 | this.S, v); this.S = (this.S-1)&0xFF; }
+      pull(){ this.S = (this.S+1)&0xFF; return this.read(0x0100 | this.S); }
+
+      // Interrupts
+      nmi(){ this.push(hi(this.PC)); this.push(lo(this.PC)); this.push(this.P & ~0x10); this.setI(1); this.PC = this.read16(0xFFFA); this.cycles += 7; }
+      irq(){ if (!this.I){ this.push(hi(this.PC)); this.push(lo(this.PC)); this.push(this.P & ~0x10); this.setI(1); this.PC = this.read16(0xFFFE); this.cycles += 7; } }
+adc(m){
+  const a = this.A, c = (this.P & 1);
+  const r = a + m + c;
+  this.setC(r > 0xFF);
+  const res = r & 0xFF;
+  // V = (~(A ^ M) & (A ^ R) & 0x80) != 0
+  this.setV(((~(a ^ m) & (a ^ res)) & 0x80) !== 0);
+  this.A = res;
+  this.updateZN(res);
+}
+// SBC = A + (~M) + C
+sbc(m){
+  const a = this.A, c = (this.P & 1);
+  const m2 = (~m) & 0xFF;
+  const r = a + m2 + c;
+  this.setC(r > 0xFF);
+  const res = r & 0xFF;
+  // V = (~(A ^ ~M) & (A ^ R) & 0x80) != 0  => same as (A ^ M)
+  this.setV(((~(a ^ m) & (a ^ res)) & 0x80) !== 0);
+  this.A = res;
+  this.updateZN(res);
+}
+compare(reg, m){
+  const r = (reg - m) & 0xFF;
+  this.setC(reg >= m);
+  this.updateZN(r);
+}
+      // Addressing modes
+      fetch(){ const v = this.read(this.PC); this.PC = (this.PC+1)&0xFFFF; return v; }
+      addr_imm(){ return this.PC++; }
+      addr_zp(){ return this.fetch(); }
+      addr_zpx(){ return (this.fetch()+this.X)&0xFF; }
+      addr_zpy(){ return (this.fetch()+this.Y)&0xFF; }
+      addr_abs(){ const lo=this.fetch(), hi_=this.fetch(); return (hi_<<8)|lo; }
+      addr_abx(){ const base=this.addr_abs(); return (base + this.X) & 0xFFFF; }
+      addr_aby(){ const base=this.addr_abs(); return (base + this.Y) & 0xFFFF; }
+      addr_ind(){ const a=this.addr_abs(); return this.read16bug(a); }
+      addr_izx(){ const zp=(this.fetch()+this.X)&0xFF; const lo=this.read(zp), hi_=this.read((zp+1)&0xFF); return (hi_<<8)|lo; }
+      addr_izy(){ const zp=this.fetch(); const lo=this.read(zp), hi_=this.read((zp+1)&0xFF); return ((hi_<<8)|lo) + this.Y & 0xFFFF; }
+      rel(){ let o=this.fetch(); if (o & 0x80) o = o - 0x100; return o; }
+
+      // One CPU step = execute one opcode (variable internal cycles)
+      step() {
+        // Handle pending interrupts (edge from PPU)
+        if (this.bus.takeNMI()) this.nmi();
+        else if (this.bus.takeIRQ()) this.irq();
+
+        const op = this.fetch();
+        const entry = this.opcodes[op];
+        if (!entry) {
+          throw new Error(`Unimplemented opcode $${op.toString(16).padStart(2,'0')} at PC=${this.PC.toString(16)}`);
+        }
+        entry.call(this);
+      }
+
+      // Minimal opcode table (pattern). Add here to progress coverage.
+      buildOpcodeTable() {
+  const t = new Array(256);
+
+  // アドレッシング簡易ヘルパ
+  const R = {
+    IMM: function(){ return this.read(this.addr_imm()); },
+    ZP:  function(){ return this.read(this.addr_zp()); },
+    ZPX: function(){ return this.read(this.addr_zpx()); },
+    ZPY: function(){ return this.read(this.addr_zpy()); },
+    ABS: function(){ return this.read(this.addr_abs()); },
+    ABX: function(){ return this.read(this.addr_abx()); },
+    ABY: function(){ return this.read(this.addr_aby()); },
+    IZX: function(){ return this.read(this.addr_izx()); },
+    IZY: function(){ return this.read(this.addr_izy()); },
+    ACC: function(){ return this.A; },
+  };
+  const W = {
+    ZP:  function(fn){ const a=this.addr_zp();  const v=fn(this.read(a)); this.write(a,v); },
+    ZPX: function(fn){ const a=this.addr_zpx(); const v=fn(this.read(a)); this.write(a,v); },
+    ZPY: function(fn){ const a=this.addr_zpy(); const v=fn(this.read(a)); this.write(a,v); },
+    ABS: function(fn){ const a=this.addr_abs(); const v=fn(this.read(a)); this.write(a,v); },
+    ABX: function(fn){ const a=this.addr_abx(); const v=fn(this.read(a)); this.write(a,v); },
+    ABY: function(fn){ const a=this.addr_aby(); const v=fn(this.read(a)); this.write(a,v); },
+    ACC: function(fn){ this.A = fn(this.A) & 0xFF; },
+  };
+  const S = {
+    ZP:  function(){ return this.addr_zp(); },
+    ZPX: function(){ return this.addr_zpx(); },
+    ZPY: function(){ return this.addr_zpy(); },
+    ABS: function(){ return this.addr_abs(); },
+    ABX: function(){ return this.addr_abx(); },
+    ABY: function(){ return this.addr_aby(); },
+    IZX: function(){ return this.addr_izx(); },
+    IZY: function(){ return this.addr_izy(); },
+  };
+
+  // RMW helpers
+  const ASL = v => { const c = (v>>7)&1; const r = (v<<1)&0xFF; this.setC(c); this.updateZN(r); return r; };
+  const LSR = v => { const c = v & 1; const r = (v>>>1)&0xFF; this.setC(c); this.updateZN(r); return r; };
+  const ROL = v => { const cIn = this.P & 1; const cOut = (v>>7)&1; const r = ((v<<1) & 0xFF) | cIn; this.setC(cOut); this.updateZN(r); return r; };
+  const ROR = v => { const cIn = this.P & 1; const cOut = v & 1; const r = ((v>>>1) | (cIn<<7)) & 0xFF; this.setC(cOut); this.updateZN(r); return r; };
+
+  // 分岐
+  const BR = (cond) => { const off = this.rel(); if (cond) this.PC = (this.PC + off) & 0xFFFF; };
+
+  // 単発ユーティリティ
+  const BIT = (m) => {
+    const v = m;
+    this.setZ((this.A & v) === 0 ? 0 : 1); // setZ expects numeric
+    // setZ wants 0 to set flag; emulate explicitly:
+    this.setZ((this.A & v) === 0 ? 0 : 1); // fix: we'll implement directly below
+  };
+
+  // 上の BIT は setZ 仕様と噛み合いが悪いので個別に処理
+  const BITexec = (m) => {
+    const v = m & 0xFF;
+    // Z flag: A & v == 0
+    this.P = (this.P & ~0x02) | (((this.A & v) === 0) ? 0x02 : 0x00);
+    // V,N from operand bit 6,7
+    this.P = (this.P & ~0x40) | (v & 0x40);
+    this.P = (this.P & ~0x80) | (v & 0x80);
+  };
+
+  // ロード/ストア
+  const LDA = (m)=>{ this.A = m & 0xFF; this.updateZN(this.A); };
+  const LDX = (m)=>{ this.X = m & 0xFF; this.updateZN(this.X); };
+  const LDY = (m)=>{ this.Y = m & 0xFF; this.updateZN(this.Y); };
+
+  // ストア（メモリアドレスに書く）
+  const STA = (addr)=>{ this.write(addr, this.A); };
+  const STX = (addr)=>{ this.write(addr, this.X); };
+  const STY = (addr)=>{ this.write(addr, this.Y); };
+
+  // ロジック
+  const ORA = (m)=>{ this.A = (this.A | m) & 0xFF; this.updateZN(this.A); };
+  const AND = (m)=>{ this.A = (this.A & m) & 0xFF; this.updateZN(this.A); };
+  const EOR = (m)=>{ this.A = (this.A ^ m) & 0xFF; this.updateZN(this.A); };
+
+  // INC/DEC
+  const INCv = (v)=>{ const r=(v+1)&0xFF; this.updateZN(r); return r; };
+  const DECv = (v)=>{ const r=(v-1)&0xFF; this.updateZN(r); return r; };
+
+  // 命令バインドの短縮（読み→演算系）
+  const bindReadOp = (table, opcodes, reader, fn) => {
+    for (const oc of opcodes) table[oc] = function(){ fn.call(this, reader.call(this)); };
+  };
+  const bindRMW = (table, opcodes, writer, op) => {
+    for (const oc of opcodes) table[oc] = function(){ writer.call(this, op); };
+  };
+  const bindStore = (table, opcodes, addrMode, fn) => {
+    for (const oc of opcodes) table[oc] = function(){ fn.call(this, addrMode.call(this)); };
+  };
+
+  // ========== ロード/ストア ==========
+  bindReadOp(t, [0xA9], R.IMM, LDA);
+  bindReadOp(t, [0xA5], R.ZP,  LDA);
+  bindReadOp(t, [0xB5], R.ZPX, LDA);
+  bindReadOp(t, [0xAD], R.ABS, LDA);
+  bindReadOp(t, [0xBD], R.ABX, LDA);
+  bindReadOp(t, [0xB9], R.ABY, LDA);
+  bindReadOp(t, [0xA1], R.IZX, LDA);
+  bindReadOp(t, [0xB1], R.IZY, LDA);
+
+  bindReadOp(t, [0xA2], R.IMM, LDX);
+  bindReadOp(t, [0xA6], R.ZP,  LDX);
+  bindReadOp(t, [0xB6], R.ZPY, LDX);
+  bindReadOp(t, [0xAE], R.ABS, LDX);
+  bindReadOp(t, [0xBE], R.ABY, LDX);
+
+  bindReadOp(t, [0xA0], R.IMM, LDY);
+  bindReadOp(t, [0xA4], R.ZP,  LDY);
+  bindReadOp(t, [0xB4], R.ZPX, LDY);
+  bindReadOp(t, [0xAC], R.ABS, LDY);
+  bindReadOp(t, [0xBC], R.ABX, LDY);
+
+  bindStore(t, [0x85], S.ZP,  STA);
+  bindStore(t, [0x95], S.ZPX, STA);
+  bindStore(t, [0x8D], S.ABS, STA);
+  bindStore(t, [0x9D], S.ABX, STA);
+  bindStore(t, [0x99], S.ABY, STA);
+  bindStore(t, [0x81], S.IZX, STA);
+  bindStore(t, [0x91], S.IZY, STA);
+
+  bindStore(t, [0x86], S.ZP,  STX);
+  bindStore(t, [0x96], S.ZPY, STX);
+  bindStore(t, [0x8E], S.ABS, STX);
+
+  bindStore(t, [0x84], S.ZP,  STY);
+  bindStore(t, [0x94], S.ZPX, STY);
+  bindStore(t, [0x8C], S.ABS, STY);
+
+  // ========== 論理/算術 ==========
+  bindReadOp(t, [0x09,0x05,0x15,0x0D,0x1D,0x19,0x01,0x11],
+                 [R.IMM,R.ZP,R.ZPX,R.ABS,R.ABX,R.ABY,R.IZX,R.IZY][0], ORA); // 下で個別に置く
+
+  // 個別展開（上の短縮は可読性低いので分けて定義）
+  bindReadOp(t, [0x09], R.IMM, ORA);
+  bindReadOp(t, [0x05], R.ZP,  ORA);
+  bindReadOp(t, [0x15], R.ZPX, ORA);
+  bindReadOp(t, [0x0D], R.ABS, ORA);
+  bindReadOp(t, [0x1D], R.ABX, ORA);
+  bindReadOp(t, [0x19], R.ABY, ORA);
+  bindReadOp(t, [0x01], R.IZX, ORA);
+  bindReadOp(t, [0x11], R.IZY, ORA);
+
+  bindReadOp(t, [0x29], R.IMM, AND);
+  bindReadOp(t, [0x25], R.ZP,  AND);
+  bindReadOp(t, [0x35], R.ZPX, AND);
+  bindReadOp(t, [0x2D], R.ABS, AND);
+  bindReadOp(t, [0x3D], R.ABX, AND);
+  bindReadOp(t, [0x39], R.ABY, AND);
+  bindReadOp(t, [0x21], R.IZX, AND);
+  bindReadOp(t, [0x31], R.IZY, AND);
+
+  bindReadOp(t, [0x49], R.IMM, EOR);
+  bindReadOp(t, [0x45], R.ZP,  EOR);
+  bindReadOp(t, [0x55], R.ZPX, EOR);
+  bindReadOp(t, [0x4D], R.ABS, EOR);
+  bindReadOp(t, [0x5D], R.ABX, EOR);
+  bindReadOp(t, [0x59], R.ABY, EOR);
+  bindReadOp(t, [0x41], R.IZX, EOR);
+  bindReadOp(t, [0x51], R.IZY, EOR);
+
+  bindReadOp(t, [0x69], R.IMM, this.adc.bind(this));
+  bindReadOp(t, [0x65], R.ZP,  this.adc.bind(this));
+  bindReadOp(t, [0x75], R.ZPX, this.adc.bind(this));
+  bindReadOp(t, [0x6D], R.ABS, this.adc.bind(this));
+  bindReadOp(t, [0x7D], R.ABX, this.adc.bind(this));
+  bindReadOp(t, [0x79], R.ABY, this.adc.bind(this));
+  bindReadOp(t, [0x61], R.IZX, this.adc.bind(this));
+  bindReadOp(t, [0x71], R.IZY, this.adc.bind(this));
+
+  bindReadOp(t, [0xE9], R.IMM, this.sbc.bind(this));
+  bindReadOp(t, [0xE5], R.ZP,  this.sbc.bind(this));
+  bindReadOp(t, [0xF5], R.ZPX, this.sbc.bind(this));
+  bindReadOp(t, [0xED], R.ABS, this.sbc.bind(this));
+  bindReadOp(t, [0xFD], R.ABX, this.sbc.bind(this));
+  bindReadOp(t, [0xF9], R.ABY, this.sbc.bind(this));
+  bindReadOp(t, [0xE1], R.IZX, this.sbc.bind(this));
+  bindReadOp(t, [0xF1], R.IZY, this.sbc.bind(this));
+
+  // BIT
+  t[0x24] = function(){ BITexec.call(this, R.ZP.call(this)); };
+  t[0x2C] = function(){ BITexec.call(this, R.ABS.call(this)); };
+
+  // CMP/CPX/CPY
+  const CmpA = (m)=> this.compare(this.A, m);
+  const CmpX = (m)=> this.compare(this.X, m);
+  const CmpY = (m)=> this.compare(this.Y, m);
+
+  bindReadOp(t, [0xC9], R.IMM, CmpA);
+  bindReadOp(t, [0xC5], R.ZP,  CmpA);
+  bindReadOp(t, [0xD5], R.ZPX, CmpA);
+  bindReadOp(t, [0xCD], R.ABS, CmpA);
+  bindReadOp(t, [0xDD], R.ABX, CmpA);
+  bindReadOp(t, [0xD9], R.ABY, CmpA);
+  bindReadOp(t, [0xC1], R.IZX, CmpA);
+  bindReadOp(t, [0xD1], R.IZY, CmpA);
+
+  bindReadOp(t, [0xE0], R.IMM, CmpX);
+  bindReadOp(t, [0xE4], R.ZP,  CmpX);
+  bindReadOp(t, [0xEC], R.ABS, CmpX);
+
+  bindReadOp(t, [0xC0], R.IMM, CmpY);
+  bindReadOp(t, [0xC4], R.ZP,  CmpY);
+  bindReadOp(t, [0xCC], R.ABS, CmpY);
+
+  // INC/DEC (メモリ)
+  bindRMW(t, [0xE6], W.ZP,  INCv);
+  bindRMW(t, [0xF6], W.ZPX, INCv);
+  bindRMW(t, [0xEE], W.ABS, INCv);
+  bindRMW(t, [0xFE], W.ABX, INCv);
+
+  bindRMW(t, [0xC6], W.ZP,  DECv);
+  bindRMW(t, [0xD6], W.ZPX, DECv);
+  bindRMW(t, [0xCE], W.ABS, DECv);
+  bindRMW(t, [0xDE], W.ABX, DECv);
+
+  // INX/DEX/INY/DEY
+  t[0xE8] = function(){ this.X=(this.X+1)&0xFF; this.updateZN(this.X); };
+  t[0xC8] = function(){ this.Y=(this.Y+1)&0xFF; this.updateZN(this.Y); };
+  t[0xCA] = function(){ this.X=(this.X-1)&0xFF; this.updateZN(this.X); };
+  t[0x88] = function(){ this.Y=(this.Y-1)&0xFF; this.updateZN(this.Y); };
+
+  // シフト/ロール
+  t[0x0A] = function(){ this.A = ASL(this.A); }; // ASL A
+  t[0x4A] = function(){ this.A = LSR(this.A); }; // LSR A
+  t[0x2A] = function(){ this.A = ROL(this.A); }; // ROL A
+  t[0x6A] = function(){ this.A = ROR(this.A); }; // ROR A
+
+  bindRMW(t, [0x06], W.ZP,  ASL);
+  bindRMW(t, [0x16], W.ZPX, ASL);
+  bindRMW(t, [0x0E], W.ABS, ASL);
+  bindRMW(t, [0x1E], W.ABX, ASL);
+
+  bindRMW(t, [0x46], W.ZP,  LSR);
+  bindRMW(t, [0x56], W.ZPX, LSR);
+  bindRMW(t, [0x4E], W.ABS, LSR);
+  bindRMW(t, [0x5E], W.ABX, LSR);
+
+  bindRMW(t, [0x26], W.ZP,  ROL);
+  bindRMW(t, [0x36], W.ZPX, ROL);
+  bindRMW(t, [0x2E], W.ABS, ROL);
+  bindRMW(t, [0x3E], W.ABX, ROL);
+
+  bindRMW(t, [0x66], W.ZP,  ROR);
+  bindRMW(t, [0x76], W.ZPX, ROR);
+  bindRMW(t, [0x6E], W.ABS, ROR);
+  bindRMW(t, [0x7E], W.ABX, ROR);
+
+  // 分岐
+  t[0x10] = function(){ BR((this.P & 0x80) === 0); }; // BPL
+  t[0x30] = function(){ BR((this.P & 0x80) !== 0); }; // BMI
+  t[0x50] = function(){ BR((this.P & 0x40) === 0); }; // BVC
+  t[0x70] = function(){ BR((this.P & 0x40) !== 0); }; // BVS
+  t[0x90] = function(){ BR((this.P & 0x01) === 0); }; // BCC
+  t[0xB0] = function(){ BR((this.P & 0x01) !== 0); }; // BCS
+  t[0xD0] = function(){ BR((this.P & 0x02) === 0); }; // BNE
+  t[0xF0] = function(){ BR((this.P & 0x02) !== 0); }; // BEQ
+
+  // ジャンプ/サブルーチン/リターン
+  t[0x4C] = function(){ this.PC = this.addr_abs(); };        // JMP abs
+  t[0x6C] = function(){ this.PC = this.addr_ind(); };        // JMP ind (6502バグはaddr_ind側で再現済み)
+  t[0x20] = function(){ const a=this.addr_abs(); const ret=(this.PC-1)&0xFFFF; this.push((ret>>8)&0xFF); this.push(ret&0xFF); this.PC=a; }; // JSR
+  t[0x60] = function(){ const lo=this.pull(); const hi_=this.pull(); this.PC=((hi_<<8)|lo)+1 & 0xFFFF; }; // RTS
+  t[0x40] = function(){ const p=this.pull() | 0x20; const lo=this.pull(); const hi_=this.pull(); this.P = (p & ~0x10); this.PC=(hi_<<8)|lo; }; // RTI
+
+  // スタック
+  t[0x48] = function(){ this.push(this.A); };                  // PHA
+  t[0x68] = function(){ this.A=this.pull(); this.updateZN(this.A); }; // PLA
+  t[0x08] = function(){ this.push(this.P | 0x10); };           // PHP (B=1でプッシュ)
+  t[0x28] = function(){ this.P = (this.pull() & ~0x10) | 0x20; };     // PLP (B=0固定, bit5=1)
+
+  // レジスタ転送
+  t[0xAA] = function(){ this.X = this.A; this.updateZN(this.X); }; // TAX
+  t[0x8A] = function(){ this.A = this.X; this.updateZN(this.A); }; // TXA
+  t[0xA8] = function(){ this.Y = this.A; this.updateZN(this.Y); }; // TAY
+  t[0x98] = function(){ this.A = this.Y; this.updateZN(this.A); }; // TYA
+  t[0xBA] = function(){ this.X = (this.S & 0xFF); this.updateZN(this.X); }; // TSX
+  t[0x9A] = function(){ this.S = this.X & 0xFF; }; // TXS
+
+  // フラグ単発
+  t[0x18] = function(){ this.setC(0); }; // CLC
+  t[0x38] = function(){ this.setC(1); }; // SEC
+  t[0x58] = function(){ this.setI(0); }; // CLI
+  t[0x78] = function(){ this.setI(1); }; // SEI
+  t[0xB8] = function(){ this.setV(0); }; // CLV
+  t[0xD8] = function(){ this.setD(0); }; // CLD
+  t[0xF8] = function(){ this.setD(1); }; // SED（2A03では効果なし）
+
+  // BRK
+  t[0x00] = function(){
+    this.fetch(); // padding
+    this.push((this.PC>>8)&0xFF); this.push(this.PC&0xFF);
+    this.push(this.P | 0x10);
+    this.setI(1);
+    this.PC = this.read16(0xFFFE);
+  };
+
+  // NOP（公式）
+  t[0xEA] = function(){};
+
+  // 未使用（非公式）は安全に例外 or NOP にしておく（ここではNOP化）
+  for (let i=0;i<256;i++){
+    if (!t[i]) t[i] = function(){ /* unofficial opcode: NOP */ };
+  }
+  return t;
+}
+    }
+  
+class Controller {
+  constructor(){
+    this.state = 0;    // A B Select Start Up Down Left Right (bit0..7)
+    this.latch = 0;
+  }
+  write(val){
+    const strobe = val & 1;
+    if (strobe){
+      this.latch = this.state; // ラッチ
+    } else {
+      // 次のreadからシフト
+    }
+    this.strobe = strobe;
+  }
+  read(){
+    let ret = (this.latch & 1) ? 1 : 0;
+    if (!this.strobe){
+      this.latch = (this.latch >> 1) | 0x80; // 8回以降は1を返す仕様に寄せる
+    }
+    return ret | 0x40; // 上位ビットは未使用だが、一般的にbit6=1など。簡略。
+  }
+  setButtons({A,B,Select,Start,Up,Down,Left,Right}){
+    let s=0;
+    if (A) s|=1<<0; if (B) s|=1<<1; if (Select) s|=1<<2; if (Start) s|=1<<3;
+    if (Up) s|=1<<4; if (Down) s|=1<<5; if (Left) s|=1<<6; if (Right) s|=1<<7;
+    this.state = s;
+  }
+}
+    // ---------- Bus & Memory map ----------
+    
+    class Bus {
+      constructor(){
+    this.cpuRAM = new Uint8Array(0x800);
+    this.cartridge = null;
+    this.mapper = null;
+    this.ppu = new PPU(this);
+    this.ctrl1 = new Controller();
+    this.ctrl2 = new Controller();
+    this.nmiLine = false;
+    this.irqLine = false;
+  }
+  insertCartridge(cart){
+    this.cartridge = cart;
+    switch (cart.mapper){
+     case 0: this.mapper = new Mapper0(cart); break;
+    case 1: this.mapper = new Mapper1(cart); break;
+    case 2: this.mapper = new Mapper2(cart); break;
+    case 3: this.mapper = new Mapper3(cart); break;
+    default: throw new Error(`Unsupported mapper ${cart.mapper}`);
+    }
+  }
+  cpuRead(addr){
+    addr &= 0xFFFF;
+  if (addr < 0x2000) return this.cpuRAM[addr & 0x7FF];
+  if (addr < 0x4000) return this.ppu.cpuRead(0x2000 + (addr & 7));
+  if (addr === 0x4016) return this.ctrl1.read();
+  if (addr === 0x4017) return this.ctrl2.read();
+  if (addr >= 0x8000) return this.mapper.cpuRead(addr); // ← これ
+  return 0;
+  }
+  cpuWrite(addr,val){
+    addr &= 0xFFFF; val &= 0xFF;
+    if (addr < 0x2000){ this.cpuRAM[addr & 0x7FF] = val; return; }
+    if (addr < 0x4000){ this.ppu.cpuWrite(0x2000 + (addr & 7), val); return; }
+    if (addr === 0x4014){
+      const base = val << 8;
+      for (let i=0;i<256;i++) this.ppu.oam[i] = this.cpuRead(base + i);
+      return;
+    }
+    if (addr === 0x4016){ this.ctrl1.write(val); this.ctrl2.write(val); return; }
+    if (addr >= 0x8000){ this.mapper.cpuWrite(addr, val); return; }
+    // APU/IO省略
+  }
+  // PPUアクセス経由
+  cartCHRRead(addr){ return this.mapper.ppuRead(addr); }
+  cartCHRWrite(addr,val){ this.mapper.ppuWrite(addr,val); }
+  ntMirror(addr){
+    const a = (addr - 0x2000) & 0x0FFF;
+    const table = (a >> 10) & 3;
+    const offset = a & 0x03FF;
+    const m = this.mapper.mirroring(); // 0: H, 1: V
+    const map = (m === 0) ? [0,0,1,1] : [0,1,0,1];
+    return map[table]*0x400 + offset;
+  }
+  requestNMI(){ this.nmiLine = true; }
+  takeNMI(){ if (this.nmiLine){ this.nmiLine=false; return true; } return false; }
+  requestIRQ(){ this.irqLine = true; }
+  takeIRQ(){ if (this.irqLine){ this.irqLine=false; return true; } return false; }
+      
+
+      // CPU read/write mapping
+      
+
+    }
+    class NES {
+      constructor() {
+        this.bus = new Bus();
+        this.cpu = new CPU(this.bus);
+        this.ppu = this.bus.ppu;
+        this.running = false;
+      }
+      loadCartridge(bytes) {
+        const cart = new Cartridge(bytes);
+  console.log("Cartridge mapper =", cart.mapper, "valid =", cart.valid);
+  if (!cart.valid) throw new Error('Unsupported ROM');
+  this.bus.insertCartridge(cart);
+  console.log("Bus.mapper =", this.bus.mapper);
+  this.cpu.reset();
+  this.ppu.reset();
+      }
+      stepFrame() {
+        // PPU runs 3x CPU (approx). Here: run CPU step then PPU 3 steps until a frame is ready.
+        // We loop until PPU signals frame boundary.
+        let guard = 0;
+      
+ 
+  while (!this.ppu.consumeFrameFlag()) {
+  this.cpu.step();
+  for (let i=0;i<3;i++) this.ppu.step();
+  if (++guard > 10_000_000) throw new Error('Frame step guard overflow');
+}
+
+
+
+        console.log("frame loop count", guard);
+        this.ppu.renderFrame();
+      }
+    }
+
+    // ---------- UI / Main loop ----------
+    const canvas = document.getElementById('screen');
+    const ctx = canvas.getContext('2d', { alpha:false });
+    const status = document.getElementById('status');
+    const startBtn = document.getElementById('start');
+    const romInput = document.getElementById('rom');
+    const fpsEl = document.getElementById('fps');
+    const pcEl = document.getElementById('pc');
+    const cycEl = document.getElementById('cyc');
+
+    let nes = new NES();
+    let romBytes = null;
+
+    romInput.addEventListener('change', async (e)=>{
+      const f = e.target.files[0];
+      if (!f) return;
+      const buf = await f.arrayBuffer();
+      romBytes = new Uint8Array(buf);
+      status.textContent = `Loaded: ${f.name} (${romBytes.length} bytes)`;
+      startBtn.disabled = false;
+    });
+
+    let lastTime = performance.now();
+    let frames = 0, lastFpsTime = lastTime;
+
+    startBtn.addEventListener('click', ()=>{
+      try {
+        nes = new NES();
+        nes.loadCartridge(romBytes);
+        status.textContent = 'Running (skeleton)';
+        loop();
+      } catch (e) {
+        console.error(e);
+        status.textContent = 'Error: ' + e.message;
+      }
+    });
+
+    function loop() {
+      // Step 1 frame in the emu
+      try {
+        nes.stepFrame();
+      } catch (e) {
+        status.textContent = 'Stopped: ' + e.message;
+        return;
+      }
+
+      // Draw black frame placeholder (PPU not rendering pixels yet)
+      const imageData = ctx.createImageData(256, 240);
+      imageData.data.set(new Uint8ClampedArray(nes.ppu.framebuffer.buffer));
+      ctx.putImageData(imageData, 0, 0);
+      function draw(){
+  const u8 = new Uint8ClampedArray(nes.ppu.framebuffer.buffer);
+  imageData.data.set(u8);
+  ctx.putImageData(imageData, 0, 0);
+}
+function loop(){
+  try { nes.stepFrame(); } catch(e){ status.textContent='Stopped: '+e.message; return; }
+  draw();
+  requestAnimationFrame(loop);
+}
+
+      // Stats
+      frames++;
+      const now = performance.now();
+      if (now - lastFpsTime >= 1000) {
+        fpsEl.textContent = frames.toString();
+        frames = 0;
+        lastFpsTime = now;
+      }
+      pcEl.textContent = nes.cpu.PC.toString(16).padStart(4,'0');
+      cycEl.textContent = nes.cpu.cycles.toString();
+
+      requestAnimationFrame(loop);
+    }
+  </script>
+</body>
+</html>
