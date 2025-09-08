@@ -1173,11 +1173,7 @@ class Controller {
   imageData.data.set(u8);
   ctx.putImageData(imageData, 0, 0);
 }
-function loop(){
-  try { nes.stepFrame(); } catch(e){ status.textContent='Stopped: '+e.message; return; }
-  draw();
-  requestAnimationFrame(loop);
-}
+
 
       // Stats
       frames++;
