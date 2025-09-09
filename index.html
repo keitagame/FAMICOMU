@@ -1029,8 +1029,37 @@ class Controller {
     this.state = s;
   }
 }
-    // ---------- Bus & Memory map ----------
-    
+    // ---------- Bus & Memory const buttonsP1 = {
+  A:false, B:false, Select:false, Start:false,
+  Up:false, Down:false, Left:false, Right:false
+};
+
+const controllerDiv = document.getElementById('controller');
+
+// 押しっぱなし対応（マウス・タッチ両方）
+controllerDiv.querySelectorAll('button').forEach(btn => {
+  const name = btn.dataset.btn;
+
+  const press = () => {
+    buttonsP1[name] = true;
+    nes.bus.ctrl1.setButtons(buttonsP1);
+  };
+  const release = () => {
+    buttonsP1[name] = false;
+    nes.bus.ctrl1.setButtons(buttonsP1);
+  };
+
+  btn.addEventListener('mousedown', press);
+  btn.addEventListener('mouseup', release);
+  btn.addEventListener('mouseleave', release);
+
+  btn.addEventListener('touchstart', e => {
+    e.preventDefault();
+    press();
+  }, {passive: false});
+  btn.addEventListener('touchend', release);
+});
+
     class Bus {
       constructor(){
     this.cpuRAM = new Uint8Array(0x800);
