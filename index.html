@@ -337,26 +337,32 @@ class Mapper1 extends IMapper {
 getPaletteRGBA(idx){ return NES_PALETTE[idx & 0x3F] || 0x000000FF; }
       // CPU reads/writes to PPU regs
       cpuRead(addr) {
-        switch (addr & 7) {
-          case 2: { // PPUSTATUS
-            const val = this.PPUSTATUS;
-            this.PPUSTATUS &= 0x7F; // clear VBlank
-            this.writeToggle = 0;
-            return val;
-          }
-          case 4: return this.oam[this.OAMADDR];
-          case 7: { // PPUDATA
-            if (!this.mapper) return 0;
-            const val = this.ppuRead(this.ppuAddr);
-            const ret = (this.ppuAddr & 0x3F00) === 0x3F00 ? val : this.ppuDataBuffer;
-            this.ppuDataBuffer = val;
-            this.ppuAddr = (this.ppuAddr + this.vramIncrement()) & 0x3FFF;
-            
-            return ret;
-          }
-          default: return 0;
-        }
-      }
+  switch (addr & 7) {
+    case 2: {
+      const val = this.PPUSTATUS;
+      this.PPUSTATUS &= 0x7F;
+      this.writeToggle = 0;
+      this.w = 0; // 実装の主語を揃えるならこれも
+      return val;
+    }
+    case 4:
+      return this.oam[this.OAMADDR];
+
+    case 7: { // PPUDATA
+      const addr = this.v & 0x3FFF;
+      const val = this.ppuRead(addr);
+      const ret = (addr & 0x3F00) === 0x3F00 ? val : this.ppuDataBuffer;
+      this.ppuDataBuffer = val;
+      // アドレスは v を使って進める
+      this.v = (this.v + this.vramIncrement()) & 0x3FFF;
+      return ret;
+    }
+
+    default:
+      return 0;
+  }
+}
+
       cpuWrite(addr, value) {
         const v = value & 0xFF;
         switch (addr & 7){
@@ -394,20 +400,21 @@ getPaletteRGBA(idx){ return NES_PALETTE[idx & 0x3F] || 0x000000FF; }
           this.w = 0;
         }
         break;
-      case 7: // PPUDATA
-        this.ppuWrite(this.v & 0x3FFF, v);
-        this.v = (this.v + this.vramIncrement()) & 0x7FFF;
-        break;
+     case 7: { // PPUDATA
+  const a = this.v & 0x3FFF;
+  this.ppuWrite(a, v);
+  this.v = (this.v + this.vramIncrement()) & 0x3FFF;
+  break;
+}
     }
       }
       vramIncrement() { return (this.PPUCTRL & 0x04) ? 32 : 1; }
       updateNMI() {
-        // If VBlank started and NMI enabled, trigger via bus
-        if ((this.PPUCTRL & 0x80) && (this.PPUSTATUS & 0x80) && !this.nmiOccurred) {
-          this.nmiOccurred = true;
-          this.bus.requestNMI();
-        }
-      }
+  if ((this.PPUCTRL & 0x80) && this.nmiOccurred) {
+    this.bus.requestNMI();
+  }
+}
+
       ppuRead(addr) {
         addr &= 0x3FFF;
         if (addr < 0x2000) {
@@ -436,7 +443,32 @@ getPaletteRGBA(idx){ return NES_PALETTE[idx & 0x3F] || 0x000000FF; }
       }
 
       // Advance PPU by 1 cycle; set VBlank and frameReady appropriately
-      step() { this.cycle++;  if (this.cycle > 340) { this.cycle = 0; this.scanline++; if (this.scanline === 241) {  this.PPUSTATUS |= 0x80; this.nmiOccurred = false; this.updateNMI(); } if (this.scanline > 262) { this.scanline = 0; this.PPUSTATUS &= 0x7F; this.frame++; this.frameReady = true; } } }
+      step() {
+  this.cycle++;
+  if (this.cycle > 340) {
+    this.cycle = 0;
+    this.scanline++;
+
+    if (this.scanline === 241) {
+      this.PPUSTATUS |= 0x80;   // VBlank開始
+      this.nmiOccurred = true;
+      this.updateNMI();
+    }
+
+    if (this.scanline === 261) {
+      // pre-render line の先頭でクリア
+      this.PPUSTATUS &= 0x7F;
+      this.nmiOccurred = false;
+    }
+
+    if (this.scanline > 261) {
+      this.scanline = 0;
+      this.frame++;
+      this.frameReady = true;
+    }
+  }
+}
+
 
       consumeFrameFlag() {
         const f = this.frameReady;
