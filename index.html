@@ -1035,6 +1035,17 @@ class Controller {
 };
 
 const controllerDiv = document.getElementById('controller');
+// NESボタンのビット位置に合わせたマッピング
+const keyMap = {
+  'KeyX':     'A',      // Aボタン
+  'KeyZ':     'B',      // Bボタン
+  'ShiftLeft':'Select', // Select
+  'Enter':    'Start',  // Start
+  'ArrowUp':  'Up',
+  'ArrowDown':'Down',
+  'ArrowLeft':'Left',
+  'ArrowRight':'Right'
+};
 
 // 押しっぱなし対応（マウス・タッチ両方）
 controllerDiv.querySelectorAll('button').forEach(btn => {
