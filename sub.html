@@ -1558,7 +1558,7 @@ window.addEventListener('keyup', e => {
   while (!this.ppu.consumeFrameFlag()) {
   this.cpu.step();
   const used = this.cpu.step();
-  for (let i=0;i<30;i++) this.ppu.step();
+  for (let i=0;i<100;i++) this.ppu.step();
   if (++guard > 10_000_000) throw new Error('Frame step guard overflow');
 }
 
