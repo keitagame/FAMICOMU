@@ -20,6 +20,7 @@
     <input id="rom" type="file" accept=".nes" />
     <button id="start" disabled>Start</button>
     <div class="mono" id="status">No ROM</div>
+    <input type="text" id="myInput" value="30">
   </header>
   <div class="row">
     <canvas id="screen" width="256" height="240"></canvas>
@@ -1072,6 +1073,7 @@ compare(reg, m){
           throw new Error(`Unimplemented opcode $${op.toString(16).padStart(2,'0')} at PC=${this.PC.toString(16)}`);
         }
         entry.call(this);
+       
       }
 
       // Minimal opcode table (pattern). Add here to progress coverage.
@@ -1551,17 +1553,18 @@ window.addEventListener('keyup', e => {
       stepFrame() {
         // PPU runs 3x CPU (approx). Here: run CPU step then PPU 3 steps until a frame is ready.
         // We loop until PPU signals frame boundary.
-        let guard = 0;
       
-
-
-  while (!this.ppu.consumeFrameFlag()) {
+      let guard = 0;
+while (!this.ppu.consumeFrameFlag()) {
   this.cpu.step();
   const used = this.cpu.step();
-  for (let i=0;i<40;i++) this.ppu.step();
+  for (let i=0;i<document.getElementById("myInput").value;i++) this.ppu.step();
   if (++guard > 10_000_000) throw new Error('Frame step guard overflow');
 }
 
+
+   
+  
 
 
         console.log("frame loop count", guard);
