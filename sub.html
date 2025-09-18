@@ -843,6 +843,7 @@ ppuWrite(addr, val) {
     const bgPatternBase = (this.PPUCTRL & 0x10) ? 0x1000 : 0x0000;
 
     // vの内容からスクロールを抽出
+this.v = this.t
     const fineX = this.x & 0x07;
     const coarseX = (this.v & 0x001F);
     const coarseY = (this.v & 0x03E0) >> 5;
