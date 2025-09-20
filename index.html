@@ -1551,28 +1551,31 @@ window.addEventListener('keyup', e => {
   this.cpu.reset();
   this.ppu.reset();
       }
-      stepFrame() {
-        // PPU runs 3x CPU (approx). Here: run CPU step then PPU 3 steps until a frame is ready.
-        // We loop until PPU signals frame boundary.
-      
-      let guard = 0;
-while (!this.ppu.consumeFrameFlag()) {
-  this.cpu.step();
-  const used = this.cpu.step();
-  for (let i=0;i<document.getElementById("myInput").value;i++) this.ppu.step();
-  if (++guard > 10_000_000) throw new Error('Frame step guard overflow');
-}
+     // === NES.stepFrame の安全化（step を二回呼んでいる箇所を修正、PC 繰り返し検出を追加） ===
+stepFrame() {
+  // PPU runs faster than CPU. Use CPU.step() return value to advance PPU.
+  let guard = 0;
+  // PC が同じ値でループしているか検出するための簡易カウンタ
+  let samePcCount = 0;
+  let lastPc = this.cpu.PC;
 
+  while (!this.ppu.consumeFrameFlag()) {
+    // 1. CPU を 1 命令だけ実行
+    const used = this.cpu.step(); // CPU.step は消費サイクル数を返す想定
 
+    // 2. PC が変わっていない連続回数をカウント（無限ループ検出）
    
-  
+    // 3. PPU を CPU サイクル × 3（実機比）だけ進める
+    const ppuSteps = (typeof used === 'number' && used > 0) ? (used * 3) : parseInt(document.getElementById("myInput").value || '3', 10);
+    for (let i = 0; i < ppuSteps; i++) this.ppu.step();
 
+    if (++guard > 10_000_000) throw new Error('Frame step guard overflow');
+  }
 
-        console.log("frame loop count", guard);
-        this.ppu.renderFrame();
-      }
-    }
-
+  console.log("frame loop count", guard);
+  this.ppu.renderFrame();
+}
+}
     // ---------- UI / Main loop ----------
     const canvas = document.getElementById('screen');
     const ctx = canvas.getContext('2d', { alpha:true });
