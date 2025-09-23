@@ -1,526 +1,815 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="ja">
-<head>
-  <meta charset="utf-8">
-  <title>MML Composer (No-Regex, Extensible)</title>
-  <style>
-    body { font-family: system-ui, sans-serif; margin: 20px; }
-    textarea { width: 100%; height: 180px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    .row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
-    button { padding: 8px 12px; }
-    select, input[type="number"] { padding: 6px; }
-    .small { font-size: 12px; color: #555; }
-    .tracks { white-space: pre; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: #f6f8fa; padding: 8px; border-radius: 6px; }
-  </style>
-</head>
-<body>
-  <h1>MML Composer</h1>
-  <p class="small">各行が独立したトラックとして同時に再生されます。例は下にあります。</p>
-  <textarea id="mml"></textarea>
-  <div class="row">
-    <button id="play">Play</button>
-    <button id="stop">Stop</button>
-    <label>Master volume <input id="master" type="range" min="0" max="1" step="0.01" value="0.9"></label>
-  </div>
-  <div class="small tracks" id="help">
-    Supported:
-    - Notes A-G with + - #, rests r
-    - oN octave, < > step, tBPM, lN default length (1,2,4,8,16,...)
-    - v0..127 volume, p-64..64 pan, @instrument
-    - dotted ., tie &, loops [ ... ]n
-  </div>
-  <script>
-    // ----------------------------
-    // Utility: frequency from pitch
-    // ----------------------------
-    function midiToFreq(midi) {
-      return 440 * Math.pow(2, (midi - 69) / 12);
-    }
-    const NOTE_BASE = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 };
-
-    // ----------------------------
-    // Tokenizer (no regex)
-    // ----------------------------
-    class Reader {
-      constructor(text) { this.text = text; this.i = 0; }
-      peek() { return this.text[this.i] ?? null; }
-      next() { return this.text[this.i++] ?? null; }
-      eof() { return this.i >= this.text.length; }
-      skipSpaces() {
-        while (!this.eof()) {
-          const c = this.peek();
-          if (c === ' ' || c === '\t' || c === '\r') this.next();
-          else break;
-        }
+  <head>
+    <meta charset="utf-8" />
+    <title>MML Composer (No-Regex, Extensible)</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 20px; }
+      textarea { width: 100%; height: 180px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+      button { padding: 8px 12px; }
+      select, input[type="number"] { padding: 6px; }
+      .small { font-size: 12px; color: #555; }
+      .tracks { white-space: pre; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: #f6f8fa; padding: 8px; border-radius: 6px; }
+    </style>
+  </head>
+  <body>
+    <h1>MML Composer</h1>
+    <p class="small">
+      各行が独立したトラックとして同時に再生されます。例は下にあります。
+    </p>
+    <textarea id="mml"></textarea>
+    <div class="row">
+      <button id="play">Play</button>
+      <button id="stop">Stop</button>
+      <label
+        >Master volume
+        <input id="master" type="range" min="0" max="1" step="0.01" value="0.9"
+      /></label>
+    </div>
+    <div class="small tracks" id="help">
+      Supported: - Notes A-G with + - #, rests r - oN octave, < > step, tBPM, lN
+      default length (1,2,4,8,16,...) - v0..127 volume, p-64..64 pan,
+      @instrument - dotted ., tie &, loops [ ... ]n
+    </div>
+    <script>
+      // ----------------------------
+      // Utility: frequency from pitch
+      // ----------------------------
+      function midiToFreq(midi) {
+        return 440 * Math.pow(2, (midi - 69) / 12);
       }
-      readInt() {
-        let s = ''; while (!this.eof()) {
-          const c = this.peek();
-          if (c >= '0' && c <= '9') { s += c; this.next(); }
-          else break;
-        }
-        return s.length ? parseInt(s, 10) : null;
-      }
-      readIdent() {
-        let s = ''; while (!this.eof()) {
-          const c = this.peek();
-          if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c === '_' || c === '-') {
-            s += c; this.next();
-          } else break;
-        }
-        return s.toLowerCase();
-      }
-    }
+      const NOTE_BASE = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 };
 
-    // ----------------------------
-    // Parser: to AST events per track
-    // ----------------------------
-    function parseTrack(mmlText) {
-      const r = new Reader(mmlText);
-      const events = [];
-      let state = {
-        tempo: 120,
-        octave: 4,
-        defaultLen: 4, // quarter
-        volume: 100,   // 0..127
-        pan: 0,        // -64..64
-        instrument: 'square',
-      };
-
-      function readAccidental(r) {
-        let acc = 0;
-        const c = r.peek();
-        if (c === '+' || c === '#') { acc = 1; r.next(); }
-        else if (c === '-') { acc = -1; r.next(); }
-        return acc;
-      }
-
-      function readDots(r) {
-        let dots = 0;
-        while (r.peek() === '.') { r.next(); dots++; }
-        return dots;
-      }
-
-      function pushCommand(type, value) {
-        events.push({ type, value });
-      }
-
-      function pushNoteOrRest(kind, note, acc, len, dots, tie) {
-        events.push({ type: kind, note, acc, len, dots, tie });
-      }
-
-      function parseLoop(r) {
-        // [ ... ]n
-        const body = [];
-        if (r.next() !== '[') return;
-        let depth = 1;
-        const start = r.i;
-        // Collect raw inside
-        let raw = '';
-        while (!r.eof() && depth > 0) {
-          const c = r.next();
-          if (c === '[') depth++;
-          else if (c === ']') depth--;
-          if (depth > 0) raw += c;
+      // ----------------------------
+      // Tokenizer (no regex)
+      // ----------------------------
+      class Reader {
+        constructor(text) {
+          this.text = text;
+          this.i = 0;
         }
-        const times = r.readInt() ?? 2;
-        body.push({ type: 'loop', raw, times });
-        events.push(...body);
-      }
-
-      while (!r.eof()) {
-        r.skipSpaces();
-        const c = r.peek();
-        if (c === null) break;
-        // Comments: ; to end of line
-        if (c === ';') {
-          while (!r.eof() && r.next() !== '\n') {}
-          continue;
+        peek() {
+          return this.text[this.i] ?? null;
         }
-        // Newline -> treat as separator; but track-level only here
-        if (c === '\n') { r.next(); continue; }
-
-        if (c === 't' || c === 'T') {
-          r.next();
-          const bpm = r.readInt();
-          if (bpm !== null) { state.tempo = Math.max(1, bpm); pushCommand('tempo', state.tempo); }
-          continue;
+        next() {
+          return this.text[this.i++] ?? null;
         }
-        if (c === 'o' || c === 'O') {
-          r.next();
-          const o = r.readInt();
-          if (o !== null) { state.octave = Math.max(0, Math.min(8, o)); pushCommand('octave', state.octave); }
-          continue;
+        eof() {
+          return this.i >= this.text.length;
         }
-        if (c === 'l' || c === 'L') {
-          r.next();
-          const dl = r.readInt();
-          if (dl !== null) { state.defaultLen = dl; pushCommand('defaultLen', state.defaultLen); }
-          continue;
-        }
-        if (c === 'v' || c === 'V') {
-          r.next();
-          const v = r.readInt();
-          if (v !== null) { state.volume = Math.max(0, Math.min(127, v)); pushCommand('volume', state.volume); }
-          continue;
-        }
-        if (c === 'p' || c === 'P') {
-          r.next();
-          const p = r.readInt();
-          if (p !== null) { state.pan = Math.max(-64, Math.min(64, p)); pushCommand('pan', state.pan); }
-          continue;
-        }
-        if (c === '@') {
-          r.next();
-          const name = r.readIdent();
-          if (name) { state.instrument = name; pushCommand('instrument', name); }
-          continue;
-        }
-        if (c === '<' || c === '>') {
-          r.next();
-          if (c === '<') { state.octave = Math.max(0, state.octave - 1); pushCommand('octave', state.octave); }
-          else { state.octave = Math.min(8, state.octave + 1); pushCommand('octave', state.octave); }
-          continue;
-        }
-        if (c === '[') {
-          parseLoop(r);
-          continue;
-        }
-
-        // Note or rest
-        if (/[abcdefgABCDEFGrR]/.test(c)) {
-          const ch = r.next().toLowerCase();
-          if (ch === 'r') {
-            const len = r.readInt();
-            const dots = readDots(r);
-            let tie = false;
-            if (r.peek() === '&') { r.next(); tie = true; }
-            pushNoteOrRest('rest', null, 0, len, dots, tie);
-          } else {
-            const base = NOTE_BASE[ch];
-            const acc = readAccidental(r);
-            const len = r.readInt();
-            const dots = readDots(r);
-            let tie = false;
-            if (r.peek() === '&') { r.next(); tie = true; }
-            pushNoteOrRest('note', base, acc, len, dots, tie);
+        skipSpaces() {
+          while (!this.eof()) {
+            const c = this.peek();
+            if (c === " " || c === "\t" || c === "\r") this.next();
+            else break;
           }
-          continue;
+        }
+        readInt() {
+          let s = "";
+          while (!this.eof()) {
+            const c = this.peek();
+            if (c >= "0" && c <= "9") {
+              s += c;
+              this.next();
+            } else break;
+          }
+          return s.length ? parseInt(s, 10) : null;
+        }
+        readIdent() {
+          let s = "";
+          while (!this.eof()) {
+            const c = this.peek();
+            if (
+              (c >= "a" && c <= "z") ||
+              (c >= "A" && c <= "Z") ||
+              c === "_" ||
+              c === "-"
+            ) {
+              s += c;
+              this.next();
+            } else break;
+          }
+          return s.toLowerCase();
+        }
+      }
+
+      // ----------------------------
+      // Parser: to AST events per track
+      // ----------------------------
+      function parseTrack(mmlText) {
+        const r = new Reader(mmlText);
+        const events = [];
+        let state = {
+          tempo: 120,
+          octave: 4,
+          defaultLen: 4, // quarter
+          volume: 100, // 0..127
+          pan: 0, // -64..64
+          instrument: "square",
+        };
+
+        function readAccidental(r) {
+          let acc = 0;
+          const c = r.peek();
+          if (c === "+" || c === "#") {
+            acc = 1;
+            r.next();
+          } else if (c === "-") {
+            acc = -1;
+            r.next();
+          }
+          return acc;
         }
 
-        // Unknown char -> skip
-        r.next();
-      }
+        function readDots(r) {
+          let dots = 0;
+          while (r.peek() === ".") {
+            r.next();
+            dots++;
+          }
+          return dots;
+        }
 
-      return { events, initial: state };
-    }
+        function pushCommand(type, value) {
+          events.push({ type, value });
+        }
 
-    // ----------------------------
-    // Sequencer: events to timeline
-    // ----------------------------
-    function dottedFactor(dots) {
-      // geometric sum: 1 + 1/2 + 1/4 + ...
-      let f = 1, add = 0.5;
-      for (let i = 0; i < dots; i++) { f += add; add /= 2; }
-      return f;
-    }
-    function lengthToBeats(denom) {
-      // defaultLen is denominator: 1=whole, 2=half, 4=quarter, etc.
-      return 4 / (denom || 4); // quarter=1 beat, whole=4 beats
-    }
+        function pushNoteOrRest(kind, note, acc, len, dots, tie) {
+          events.push({ type: kind, note, acc, len, dots, tie });
+        }
 
-    function buildTimeline(ast) {
-      const { events, initial } = ast;
-      let tempo = initial.tempo;
-      let octave = initial.octave;
-      let defLen = initial.defaultLen;
-      let volume = initial.volume;
-      let pan = initial.pan;
-      let instrument = initial.instrument;
+        function parseLoop(r) {
+          // [ ... ]n
+          const body = [];
+          if (r.next() !== "[") return;
+          let depth = 1;
+          const start = r.i;
+          // Collect raw inside
+          let raw = "";
+          while (!r.eof() && depth > 0) {
+            const c = r.next();
+            if (c === "[") depth++;
+            else if (c === "]") depth--;
+            if (depth > 0) raw += c;
+          }
+          const times = r.readInt() ?? 2;
+          body.push({ type: "loop", raw, times });
+          events.push(...body);
+        }
 
-      const timeline = [];
-      let timeBeats = 0;
+        while (!r.eof()) {
+          r.skipSpaces();
+          const c = r.peek();
+          if (c === null) break;
+          // Comments: ; to end of line
+          if (c === ";") {
+            while (!r.eof() && r.next() !== "\n") {}
+            continue;
+          }
+          // Newline -> treat as separator; but track-level only here
+          if (c === "\n") {
+            r.next();
+            continue;
+          }
 
-      function pushNote(pitchMidi, beats, vol, pan, inst) {
-        timeline.push({ type: 'note', startBeats: timeBeats, beats, pitchMidi, volume: vol, pan, instrument: inst });
-        timeBeats += beats;
-      }
-      function pushRest(beats) {
-        timeline.push({ type: 'rest', startBeats: timeBeats, beats });
-        timeBeats += beats;
-      }
-
-      // Expand possibly nested loops by recursive parse of raw
-      function expandRaw(raw, times) {
-        for (let i = 0; i < times; i++) {
-          const sub = parseTrack(raw);
-          // Recursively evaluate sub events with current state (tempo etc remain)
-          sub.events.forEach(ev => {
-            if (ev.type === 'tempo') tempo = ev.value;
-            else if (ev.type === 'octave') octave = ev.value;
-            else if (ev.type === 'defaultLen') defLen = ev.value;
-            else if (ev.type === 'volume') volume = ev.value;
-            else if (ev.type === 'pan') pan = ev.value;
-            else if (ev.type === 'instrument') instrument = ev.value;
-            else if (ev.type === 'note') {
-              const denom = ev.len || defLen;
-              const beats = lengthToBeats(denom) * dottedFactor(ev.dots || 0);
-              const midi = (octave * 12) + ev.note + ev.acc;
-              // tie: accumulate next durations of same pitch/rest
-              if (ev.tie) {
-                let accumBeats = beats;
-                // peek ahead in the sub.events only? Simpler: just immediate next in original raw not available.
-                // For practicality, we support ties only across contiguous items in same pass; re-parse raw resolves that.
-                // Users can chain ties inside raw loop too.
-                pushNote(midi, accumBeats, volume, pan, instrument);
-              } else {
-                pushNote(midi, beats, volume, pan, instrument);
-              }
-            } else if (ev.type === 'rest') {
-              const denom = ev.len || defLen;
-              const beats = lengthToBeats(denom) * dottedFactor(ev.dots || 0);
-              pushRest(beats);
-            } else if (ev.type === 'loop') {
-              expandRaw(ev.raw, ev.times);
+          if (c === "t" || c === "T") {
+            r.next();
+            const bpm = r.readInt();
+            if (bpm !== null) {
+              state.tempo = Math.max(1, bpm);
+              pushCommand("tempo", state.tempo);
             }
+            continue;
+          }
+          if (c === "o" || c === "O") {
+            r.next();
+            const o = r.readInt();
+            if (o !== null) {
+              state.octave = Math.max(0, Math.min(8, o));
+              pushCommand("octave", state.octave);
+            }
+            continue;
+          }
+          if (c === "l" || c === "L") {
+            r.next();
+            const dl = r.readInt();
+            if (dl !== null) {
+              state.defaultLen = dl;
+              pushCommand("defaultLen", state.defaultLen);
+            }
+            continue;
+          }
+          if (c === "v" || c === "V") {
+            r.next();
+            const v = r.readInt();
+            if (v !== null) {
+              state.volume = Math.max(0, Math.min(127, v));
+              pushCommand("volume", state.volume);
+            }
+            continue;
+          }
+          if (c === "p" || c === "P") {
+            r.next();
+            const p = r.readInt();
+            if (p !== null) {
+              state.pan = Math.max(-64, Math.min(64, p));
+              pushCommand("pan", state.pan);
+            }
+            continue;
+          }
+          if (c === "@") {
+            r.next();
+            const name = r.readIdent();
+            if (name) {
+              state.instrument = name;
+              pushCommand("instrument", name);
+            }
+            continue;
+          }
+          if (c === "<" || c === ">") {
+            r.next();
+            if (c === "<") {
+              state.octave = Math.max(0, state.octave - 1);
+              pushCommand("octave", state.octave);
+            } else {
+              state.octave = Math.min(8, state.octave + 1);
+              pushCommand("octave", state.octave);
+            }
+            continue;
+          }
+          if (c === "[") {
+            parseLoop(r);
+            continue;
+          }
+
+          // Note or rest
+          if (/[abcdefgABCDEFGrR]/.test(c)) {
+            const ch = r.next().toLowerCase();
+            if (ch === "r") {
+              const len = r.readInt();
+              const dots = readDots(r);
+              let tie = false;
+              if (r.peek() === "&") {
+                r.next();
+                tie = true;
+              }
+              pushNoteOrRest("rest", null, 0, len, dots, tie);
+            } else {
+              const base = NOTE_BASE[ch];
+              const acc = readAccidental(r);
+              const len = r.readInt();
+              const dots = readDots(r);
+              let tie = false;
+              if (r.peek() === "&") {
+                r.next();
+                tie = true;
+              }
+              pushNoteOrRest("note", base, acc, len, dots, tie);
+            }
+            continue;
+          }
+
+          // Unknown char -> skip
+          r.next();
+        }
+
+        return { events, initial: state };
+      }
+
+      // ----------------------------
+      // Sequencer: events to timeline
+      // ----------------------------
+      function dottedFactor(dots) {
+        // geometric sum: 1 + 1/2 + 1/4 + ...
+        let f = 1,
+          add = 0.5;
+        for (let i = 0; i < dots; i++) {
+          f += add;
+          add /= 2;
+        }
+        return f;
+      }
+      function lengthToBeats(denom) {
+        // defaultLen is denominator: 1=whole, 2=half, 4=quarter, etc.
+        return 4 / (denom || 4); // quarter=1 beat, whole=4 beats
+      }
+
+      function buildTimeline(ast) {
+        const { events, initial } = ast;
+        let tempo = initial.tempo;
+        let octave = initial.octave;
+        let defLen = initial.defaultLen;
+        let volume = initial.volume;
+        let pan = initial.pan;
+        let instrument = initial.instrument;
+
+        const timeline = [];
+        let timeBeats = 0;
+
+        function pushNote(pitchMidi, beats, vol, pan, inst) {
+          timeline.push({
+            type: "note",
+            startBeats: timeBeats,
+            beats,
+            pitchMidi,
+            volume: vol,
+            pan,
+            instrument: inst,
           });
+          timeBeats += beats;
+        }
+        function pushRest(beats) {
+          timeline.push({ type: "rest", startBeats: timeBeats, beats });
+          timeBeats += beats;
+        }
+
+        // Expand possibly nested loops by recursive parse of raw
+        function expandRaw(raw, times) {
+          for (let i = 0; i < times; i++) {
+            const sub = parseTrack(raw);
+            // Recursively evaluate sub events with current state (tempo etc remain)
+            sub.events.forEach((ev) => {
+              if (ev.type === "tempo") tempo = ev.value;
+              else if (ev.type === "octave") octave = ev.value;
+              else if (ev.type === "defaultLen") defLen = ev.value;
+              else if (ev.type === "volume") volume = ev.value;
+              else if (ev.type === "pan") pan = ev.value;
+              else if (ev.type === "instrument") instrument = ev.value;
+              else if (ev.type === "note") {
+                const denom = ev.len || defLen;
+                const beats = lengthToBeats(denom) * dottedFactor(ev.dots || 0);
+                const midi = octave * 12 + ev.note + ev.acc;
+                // tie: accumulate next durations of same pitch/rest
+                if (ev.tie) {
+                  let accumBeats = beats;
+                  // peek ahead in the sub.events only? Simpler: just immediate next in original raw not available.
+                  // For practicality, we support ties only across contiguous items in same pass; re-parse raw resolves that.
+                  // Users can chain ties inside raw loop too.
+                  pushNote(midi, accumBeats, volume, pan, instrument);
+                } else {
+                  pushNote(midi, beats, volume, pan, instrument);
+                }
+              } else if (ev.type === "rest") {
+                const denom = ev.len || defLen;
+                const beats = lengthToBeats(denom) * dottedFactor(ev.dots || 0);
+                pushRest(beats);
+              } else if (ev.type === "loop") {
+                expandRaw(ev.raw, ev.times);
+              }
+            });
+          }
+        }
+
+        // Main pass
+        events.forEach((ev) => {
+          if (ev.type === "tempo") tempo = ev.value;
+          else if (ev.type === "octave") octave = ev.value;
+          else if (ev.type === "defaultLen") defLen = ev.value;
+          else if (ev.type === "volume") volume = ev.value;
+          else if (ev.type === "pan") pan = ev.value;
+          else if (ev.type === "instrument") instrument = ev.value;
+          else if (ev.type === "note") {
+            const denom = ev.len || defLen;
+            const beats = lengthToBeats(denom) * dottedFactor(ev.dots || 0);
+            const midi = octave * 12 + ev.note + ev.acc;
+            pushNote(midi, beats, volume, pan, instrument);
+          } else if (ev.type === "rest") {
+            const denom = ev.len || defLen;
+            const beats = lengthToBeats(denom) * dottedFactor(ev.dots || 0);
+            pushRest(beats);
+          } else if (ev.type === "loop") {
+            expandRaw(ev.raw, ev.times);
+          }
+        });
+
+        const secondsPerBeat = 60 / tempo;
+        // Convert beats to seconds
+        return timeline.map((ev) => ({
+          ...ev,
+          startSec: ev.startBeats * secondsPerBeat,
+          durSec: ev.beats * secondsPerBeat,
+        }));
+      }
+
+      // ----------------------------
+      // Instrument system (Web Audio)
+      // ----------------------------
+      class Engine {
+        constructor() {
+          this.ctx = null;
+          this.master = null;
+          this.panner = null;
+          this.instruments = new Map();
+          this.voices = new Set();
+          this._startedAt = 0;
+        }
+        ensure() {
+          if (!this.ctx) {
+            const ctx = new (window.AudioContext ||
+              window.webkitAudioContext)();
+            this.ctx = ctx;
+            this.master = ctx.createGain();
+            this.master.gain.value = parseFloat(
+              document.getElementById("master").value
+            );
+            this.master.connect(ctx.destination);
+          }
+        }
+        setMaster(vol) {
+          if (this.master)
+            this.master.gain.setTargetAtTime(vol, this.ctx.currentTime, 0.01);
+        }
+        registerInstrument(name, factory) {
+          this.instruments.set(name, factory);
+        }
+        createVoice(name, options) {
+          const factory = this.instruments.get(name);
+          if (!factory) throw new Error("Unknown instrument: " + name);
+          return factory(this.ctx, options);
+        }
+        stopAll() {
+          const now = this.ctx ? this.ctx.currentTime : 0;
+          for (const v of this.voices) {
+            try {
+              v.stop(now);
+            } catch {}
+          }
+          this.voices.clear();
+        }
+        play(tracks) {
+          this.ensure();
+          this.stopAll();
+          const startAt = this.ctx.currentTime + 0.05;
+          this._startedAt = startAt;
+          for (const tl of tracks) {
+            for (const ev of tl) {
+              if (ev.type === "note") {
+                const v = this.createVoice(ev.instrument, {
+                  gain: ev.volume / 127,
+                  pan: ev.pan / 64,
+                });
+                const t0 = startAt + ev.startSec;
+                const t1 = t0 + ev.durSec;
+                v.start(t0, midiToFreq(ev.pitchMidi), ev.durSec);
+                v.stop(t1);
+                this.voices.add(v);
+              }
+            }
+          }
         }
       }
 
-      // Main pass
-      events.forEach(ev => {
-        if (ev.type === 'tempo') tempo = ev.value;
-        else if (ev.type === 'octave') octave = ev.value;
-        else if (ev.type === 'defaultLen') defLen = ev.value;
-        else if (ev.type === 'volume') volume = ev.value;
-        else if (ev.type === 'pan') pan = ev.value;
-        else if (ev.type === 'instrument') instrument = ev.value;
-        else if (ev.type === 'note') {
-          const denom = ev.len || defLen;
-          const beats = lengthToBeats(denom) * dottedFactor(ev.dots || 0);
-          const midi = (octave * 12) + ev.note + ev.acc;
-          pushNote(midi, beats, volume, pan, instrument);
-        } else if (ev.type === 'rest') {
-          const denom = ev.len || defLen;
-          const beats = lengthToBeats(denom) * dottedFactor(ev.dots || 0);
-          pushRest(beats);
-        } else if (ev.type === 'loop') {
-          expandRaw(ev.raw, ev.times);
+      // ----------------------------
+      // Built-in instruments
+      // ----------------------------
+      function adsr(
+        gainNode,
+        ctx,
+        t0,
+        dur,
+        a = 0.01,
+        d = 0.08,
+        s = 0.6,
+        r = 0.08,
+        peak = 1.0
+      ) {
+        const g = gainNode.gain;
+        const tA = t0 + a;
+        const tD = tA + d;
+        const tS = t0 + Math.max(0, dur - r);
+        const tR = tS + r;
+        g.cancelScheduledValues(t0);
+        g.setValueAtTime(0.0001, t0);
+        g.linearRampToValueAtTime(peak, tA);
+        g.linearRampToValueAtTime(peak * s, tD);
+        g.setValueAtTime(peak * s, tS);
+        g.linearRampToValueAtTime(0.0001, tR);
+      }
+
+      function makePanner(ctx, pan) {
+        const panNode = new StereoPannerNode(ctx, { pan: pan || 0 });
+        return panNode;
+      }
+
+      // Square/Saw/Noise/FM like simple instruments
+      function OscInstrument(
+        ctx,
+        {
+          type = "square",
+          gain = 0.8,
+          pan = 0,
+          a = 0.01,
+          d = 0.06,
+          s = 0.7,
+          r = 0.06,
         }
+      ) {
+        const osc = ctx.createOscillator();
+        osc.type = type;
+        const outGain = ctx.createGain();
+        const panNode = makePanner(ctx, pan);
+        osc.connect(outGain);
+        outGain.connect(panNode).connect(engine.master);
+        return {
+          start(t, freq, dur) {
+            osc.frequency.setValueAtTime(freq, t);
+            adsr(outGain, ctx, t, dur, a, d, s, r, gain);
+            osc.start(t);
+          },
+          stop(t) {
+            try {
+              osc.stop(t + 0.001);
+            } catch {}
+          },
+        };
+      }
+
+      function NoiseInstrument(
+        ctx,
+        { gain = 0.4, pan = 0, a = 0.001, d = 0.02, s = 0.3, r = 0.05 }
+      ) {
+        const bufferSize = 2 * ctx.sampleRate;
+        const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+        const data = buffer.getChannelData(0);
+        for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+        const src = ctx.createBufferSource();
+        src.buffer = buffer;
+        src.loop = true;
+        const outGain = ctx.createGain();
+        const panNode = makePanner(ctx, pan);
+        src.connect(outGain);
+        outGain.connect(panNode).connect(engine.master);
+        return {
+          start(t, freqIgnored, dur) {
+            adsr(outGain, ctx, t, dur, a, d, s, r, gain);
+            src.start(t);
+          },
+          stop(t) {
+            try {
+              src.stop(t + 0.001);
+            } catch {}
+          },
+        };
+      }
+
+      function FMInstrument(
+        ctx,
+        {
+          gain = 0.7,
+          pan = 0,
+          a = 0.01,
+          d = 0.05,
+          s = 0.6,
+          r = 0.08,
+          ratio = 2,
+          index = 50,
+        }
+      ) {
+        const carrier = ctx.createOscillator();
+        const mod = ctx.createOscillator();
+        const modGain = ctx.createGain();
+        carrier.type = "sine";
+        mod.type = "sine";
+        mod.connect(modGain);
+        modGain.connect(carrier.frequency);
+        const outGain = ctx.createGain();
+        const panNode = makePanner(ctx, pan);
+        carrier.connect(outGain);
+        outGain.connect(panNode).connect(engine.master);
+        return {
+          start(t, freq, dur) {
+            carrier.frequency.setValueAtTime(freq, t);
+            mod.frequency.setValueAtTime(freq * ratio, t);
+            modGain.gain.setValueAtTime(index, t);
+            adsr(outGain, ctx, t, dur, a, d, s, r, gain);
+            mod.start(t);
+            carrier.start(t);
+          },
+          stop(t) {
+            try {
+              mod.stop(t + 0.001);
+              carrier.stop(t + 0.001);
+            } catch {}
+          },
+        };
+      }
+      
+
+      const engine = new Engine();
+      engine.registerInstrument('eurobrass', (ctx, opts) => {
+  const outGain = ctx.createGain();
+  outGain.gain.value = opts.gain ?? 0.85;
+  const panNode = new StereoPannerNode(ctx, { pan: opts.pan ?? 0 });
+  outGain.connect(panNode).connect(engine.master);
+
+  return {
+    start(t, freq, dur) {
+      const oscs = [];
+      const detunes = [0.99, 1.0, 1.01]; // 3 voices
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(1500, t);
+      filter.Q.value = 1.2;
+
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.0001, t);
+      // ADSR: brass-like
+      gain.gain.linearRampToValueAtTime(1.0, t + 0.005); // fast attack
+      gain.gain.linearRampToValueAtTime(0.6, t + 0.15);  // decay
+      gain.gain.setValueAtTime(0.6, t + dur - 0.1);      // sustain
+      gain.gain.linearRampToValueAtTime(0.0001, t + dur); // release
+
+      detunes.forEach(d => {
+        const osc = ctx.createOscillator();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(freq * d, t);
+        osc.connect(filter);
+        osc.start(t);
+        osc.stop(t + dur + 0.05);
+        oscs.push(osc);
       });
 
-      const secondsPerBeat = 60 / tempo;
-      // Convert beats to seconds
-      return timeline.map(ev => ({
-        ...ev,
-        startSec: ev.startBeats * secondsPerBeat,
-        durSec: ev.beats * secondsPerBeat,
-      }));
-    }
+      filter.connect(gain).connect(outGain);
+    },
+    stop(t) {}
+  };
+});
+engine.registerInstrument('eurolead', (ctx, opts) => {
+  const outGain = ctx.createGain();
+  outGain.gain.value = opts.gain ?? 0.8;
+  const panNode = new StereoPannerNode(ctx, { pan: opts.pan ?? 0 });
+  outGain.connect(panNode).connect(engine.master);
 
-    // ----------------------------
-    // Instrument system (Web Audio)
-    // ----------------------------
-    class Engine {
-      constructor() {
-        this.ctx = null;
-        this.master = null;
-        this.panner = null;
-        this.instruments = new Map();
-        this.voices = new Set();
-        this._startedAt = 0;
-      }
-      ensure() {
-        if (!this.ctx) {
-          const ctx = new (window.AudioContext || window.webkitAudioContext)();
-          this.ctx = ctx;
-          this.master = ctx.createGain();
-          this.master.gain.value = parseFloat(document.getElementById('master').value);
-          this.master.connect(ctx.destination);
-        }
-      }
-      setMaster(vol) {
-        if (this.master) this.master.gain.setTargetAtTime(vol, this.ctx.currentTime, 0.01);
-      }
-      registerInstrument(name, factory) {
-        this.instruments.set(name, factory);
-      }
-      createVoice(name, options) {
-        const factory = this.instruments.get(name);
-        if (!factory) throw new Error('Unknown instrument: ' + name);
-        return factory(this.ctx, options);
-      }
-      stopAll() {
-        const now = this.ctx ? this.ctx.currentTime : 0;
-        for (const v of this.voices) {
-          try { v.stop(now); } catch {}
-        }
-        this.voices.clear();
-      }
-      play(tracks) {
-        this.ensure();
-        this.stopAll();
-        const startAt = this.ctx.currentTime + 0.05;
-        this._startedAt = startAt;
-        for (const tl of tracks) {
-          for (const ev of tl) {
-            if (ev.type === 'note') {
-              const v = this.createVoice(ev.instrument, {
-                gain: ev.volume / 127,
-                pan: ev.pan / 64
-              });
-              const t0 = startAt + ev.startSec;
-              const t1 = t0 + ev.durSec;
-              v.start(t0, midiToFreq(ev.pitchMidi), ev.durSec);
-              v.stop(t1);
-              this.voices.add(v);
-            }
-          }
-        }
-      }
-    }
+  return {
+    start(t, freq, dur) {
+      // detuned saws
+      const osc1 = ctx.createOscillator();
+      const osc2 = ctx.createOscillator();
+      osc1.type = 'sawtooth';
+      osc2.type = 'sawtooth';
+      osc1.frequency.setValueAtTime(freq * 0.995, t);
+      osc2.frequency.setValueAtTime(freq * 1.005, t);
 
-    // ----------------------------
-    // Built-in instruments
-    // ----------------------------
-    function adsr(gainNode, ctx, t0, dur, a=0.01, d=0.08, s=0.6, r=0.08, peak=1.0) {
-      const g = gainNode.gain;
-      const tA = t0 + a;
-      const tD = tA + d;
-      const tS = t0 + Math.max(0, dur - r);
-      const tR = tS + r;
-      g.cancelScheduledValues(t0);
-      g.setValueAtTime(0.0001, t0);
-      g.linearRampToValueAtTime(peak, tA);
-      g.linearRampToValueAtTime(peak * s, tD);
-      g.setValueAtTime(peak * s, tS);
-      g.linearRampToValueAtTime(0.0001, tR);
-    }
+      // filter for brightness
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(8000, t);
+      filter.Q.value = 1;
 
-    function makePanner(ctx, pan) {
-      const panNode = new StereoPannerNode(ctx, { pan: pan || 0 });
-      return panNode;
-    }
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.0001, t);
+      // ADSR
+      gain.gain.linearRampToValueAtTime(1.0, t + 0.01); // attack
+      gain.gain.linearRampToValueAtTime(0.7, t + 0.1);  // decay
+      gain.gain.setValueAtTime(0.7, t + dur - 0.1);     // sustain
+      gain.gain.linearRampToValueAtTime(0.0001, t + dur); // release
 
-    // Square/Saw/Noise/FM like simple instruments
-    function OscInstrument(ctx, { type = 'square', gain = 0.8, pan = 0, a=0.01, d=0.06, s=0.7, r=0.06 }) {
+      osc1.connect(filter);
+      osc2.connect(filter);
+      filter.connect(gain).connect(outGain);
+
+      osc1.start(t);
+      osc2.start(t);
+      osc1.stop(t + dur + 0.05);
+      osc2.stop(t + dur + 0.05);
+    },
+    stop(t) {}
+  };
+});
+
+      engine.registerInstrument('eurokick', (ctx, opts) => {
+  const outGain = ctx.createGain();
+  outGain.connect(engine.master);
+
+  return {
+    start(t, freq, dur) {
+      // サイン波で低音キック
       const osc = ctx.createOscillator();
-      osc.type = type;
-      const outGain = ctx.createGain();
-      const panNode = makePanner(ctx, pan);
-      osc.connect(outGain);
-      outGain.connect(panNode).connect(engine.master);
-      return {
-        start(t, freq, dur) {
-          osc.frequency.setValueAtTime(freq, t);
-          adsr(outGain, ctx, t, dur, a, d, s, r, gain);
-          osc.start(t);
-        },
-        stop(t) {
-          try { osc.stop(t + 0.001); } catch {}
-        }
-      };
-    }
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(150, t);
+      osc.frequency.exponentialRampToValueAtTime(50, t + 0.15);
 
-    function NoiseInstrument(ctx, { gain = 0.4, pan = 0, a=0.001, d=0.02, s=0.3, r=0.05 }) {
-      const bufferSize = 2 * ctx.sampleRate;
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(1.0, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
+
+      osc.connect(gain).connect(outGain);
+      osc.start(t);
+      osc.stop(t + 0.5);
+
+      // ノイズでアタックを追加
+      const bufferSize = ctx.sampleRate * 0.2;
       const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
       const data = buffer.getChannelData(0);
-      for (let i = 0; i < bufferSize; i++) data[i] = Math.random()*2-1;
-      const src = ctx.createBufferSource();
-      src.buffer = buffer;
-      src.loop = true;
-      const outGain = ctx.createGain();
-      const panNode = makePanner(ctx, pan);
-      src.connect(outGain);
-      outGain.connect(panNode).connect(engine.master);
-      return {
-        start(t, freqIgnored, dur) {
-          adsr(outGain, ctx, t, dur, a, d, s, r, gain);
-          src.start(t);
-        },
-        stop(t) {
-          try { src.stop(t + 0.001); } catch {}
+      for (let i = 0; i < bufferSize; i++) data[i] = Math.random() * 2 - 1;
+
+      const noise = ctx.createBufferSource();
+      noise.buffer = buffer;
+
+      const noiseGain = ctx.createGain();
+      noiseGain.gain.setValueAtTime(0.4, t);
+      noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+
+      noise.connect(noiseGain).connect(outGain);
+      noise.start(t);
+      noise.stop(t + 0.2);
+    },
+    stop(t) {
+      // キックは短いので特に不要
+    }
+  };
+});
+
+
+      // Hi-hat (ノイズベースの短い音)
+      engine.registerInstrument("eurohat", (ctx, opts) => {
+        return NoiseInstrument(ctx, {
+          gain: opts.gain ?? 0.4,
+          pan: opts.pan ?? 0,
+          a: 0.001,
+          d: 0.02,
+          s: 0.0,
+          r: 0.01,
+        });
+      });
+
+      // Clap (ノイズを少し長めに)
+      engine.registerInstrument("euroclap", (ctx, opts) => {
+        return NoiseInstrument(ctx, {
+          gain: opts.gain ?? 0.5,
+          pan: opts.pan ?? 0,
+          a: 0.001,
+          d: 0.05,
+          s: 0.0,
+          r: 0.08,
+        });
+      });
+      engine.registerInstrument("square", (ctx, opts) =>
+        OscInstrument(ctx, { type: "square", ...opts })
+      );
+      engine.registerInstrument("saw", (ctx, opts) =>
+        OscInstrument(ctx, { type: "sawtooth", ...opts })
+      );
+      engine.registerInstrument("triangle", (ctx, opts) =>
+        OscInstrument(ctx, { type: "triangle", ...opts })
+      );
+      engine.registerInstrument("sine", (ctx, opts) =>
+        OscInstrument(ctx, { type: "sine", ...opts })
+      );
+      engine.registerInstrument("noise", (ctx, opts) =>
+        NoiseInstrument(ctx, opts)
+      );
+      engine.registerInstrument("fm", (ctx, opts) => FMInstrument(ctx, opts));
+
+      // ----------------------------
+      // Multi-track assembly
+      // ----------------------------
+      function parseAllTracks(text) {
+        const lines = text
+          .split("\n")
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0);
+        const timelines = [];
+        for (const line of lines) {
+          const ast = parseTrack(line);
+          const tl = buildTimeline(ast);
+          timelines.push(tl);
         }
-      };
-    }
+        return timelines;
+      }
 
-    function FMInstrument(ctx, { gain = 0.7, pan = 0, a=0.01, d=0.05, s=0.6, r=0.08, ratio=2, index=50 }) {
-      const carrier = ctx.createOscillator();
-      const mod = ctx.createOscillator();
-      const modGain = ctx.createGain();
-      carrier.type = 'sine';
-      mod.type = 'sine';
-      mod.connect(modGain);
-      modGain.connect(carrier.frequency);
-      const outGain = ctx.createGain();
-      const panNode = makePanner(ctx, pan);
-      carrier.connect(outGain);
-      outGain.connect(panNode).connect(engine.master);
-      return {
-        start(t, freq, dur) {
-          carrier.frequency.setValueAtTime(freq, t);
-          mod.frequency.setValueAtTime(freq * ratio, t);
-          modGain.gain.setValueAtTime(index, t);
-          adsr(outGain, ctx, t, dur, a, d, s, r, gain);
-          mod.start(t);
-          carrier.start(t);
-        },
-        stop(t) {
-          try { mod.stop(t + 0.001); carrier.stop(t + 0.001); } catch {}
+      // ----------------------------
+      // UI wiring
+      // ----------------------------
+      const input = document.getElementById("mml");
+      const playBtn = document.getElementById("play");
+      const stopBtn = document.getElementById("stop");
+      const master = document.getElementById("master");
+
+      master.addEventListener("input", () =>
+        engine.setMaster(parseFloat(master.value))
+      );
+
+      playBtn.addEventListener("click", () => {
+        try {
+          const tracks = parseAllTracks(input.value);
+          engine.play(tracks);
+        } catch (e) {
+          alert("Parse/Play error: " + e.message);
         }
-      };
-    }
+      });
+      stopBtn.addEventListener(
+        "click",
+        () => engine.ensure() && engine.stopAll()
+      );
 
-    const engine = new Engine();
-    engine.registerInstrument('square', (ctx, opts) => OscInstrument(ctx, { type: 'square', ...opts }));
-    engine.registerInstrument('saw', (ctx, opts) => OscInstrument(ctx, { type: 'sawtooth', ...opts }));
-    engine.registerInstrument('triangle', (ctx, opts) => OscInstrument(ctx, { type: 'triangle', ...opts }));
-    engine.registerInstrument('sine', (ctx, opts) => OscInstrument(ctx, { type: 'sine', ...opts }));
-    engine.registerInstrument('noise', (ctx, opts) => NoiseInstrument(ctx, opts));
-    engine.registerInstrument('fm', (ctx, opts) => FMInstrument(ctx, opts));
-
-    // ----------------------------
-    // Multi-track assembly
-    // ----------------------------
-    function parseAllTracks(text) {
-      const lines = text.split('\n').map(s => s.trim()).filter(s => s.length > 0);
-      const timelines = [];
-      for (const line of lines) {
-        const ast = parseTrack(line);
-        const tl = buildTimeline(ast);
-        timelines.push(tl);
-      }
-      return timelines;
-    }
-
-    // ----------------------------
-    // UI wiring
-    // ----------------------------
-    const input = document.getElementById('mml');
-    const playBtn = document.getElementById('play');
-    const stopBtn = document.getElementById('stop');
-    const master = document.getElementById('master');
-
-    master.addEventListener('input', () => engine.setMaster(parseFloat(master.value)));
-
-    playBtn.addEventListener('click', () => {
-      try {
-        const tracks = parseAllTracks(input.value);
-        engine.play(tracks);
-      } catch (e) {
-        alert('Parse/Play error: ' + e.message);
-      }
-    });
-    stopBtn.addEventListener('click', () => engine.ensure() && engine.stopAll());
-
-    // ----------------------------
-    // Example default MML
-    // ----------------------------
-    input.value =
-`@square t140 o4 l8 v110 p-20 c d e f g a b > c4.
+      // ----------------------------
+      // Example default MML
+      // ----------------------------
+      input.value = `@square t140 o4 l8 v110 p-20 c d e f g a b > c4.
 @saw    t140 o3 l8 v96  p20  [c e g]2 > [c e g]2 < [b- d f]2 r4
 @fm     t140 o2 l16 v90 p0   [c c& c]4 d-8. e8 f+8 g4 r2`;
-  </script>
-</body>
+    </script>
+  </body>
 </html>
