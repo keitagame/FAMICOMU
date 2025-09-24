@@ -1,0 +1,441 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>NES 6502 Mini Assembler (iNES ROM Builder)</title>
+<style>
+  body { font-family: system-ui, sans-serif; padding: 20px; }
+  textarea { width: 100%; height: 240px; font-family: ui-monospace, monospace; }
+  pre { background: #111; color: #eee; padding: 12px; overflow: auto; }
+  button { padding: 8px 14px; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+</style>
+</head>
+<body>
+<h1>NES 6502 Mini Assembler</h1>
+
+<div class="row">
+  <div>
+    <h3>Source</h3>
+    <textarea id="src"></textarea>
+    <button id="assemble">Assemble & Download .nes</button>
+    <a id="download" download="minimal.nes" style="display:none;margin-left:8px;">Download ready</a>
+    <div id="msg"></div>
+  </div>
+  <div>
+    <h3>PRG Hex (preview)</h3>
+    <pre id="hex"></pre>
+  </div>
+</div>
+
+<script>
+const SYMBOLS = {
+  'PPUCTRL':  0x2000,
+  'PPUMASK':  0x2001,
+  'PPUSTATUS':0x2002,
+  'OAMADDR':  0x2003,
+  'OAMDATA':  0x2004,
+  'PPUSCROLL':0x2005,
+  'PPUADDR':  0x2006,
+  'PPUDATA':  0x2007
+};
+// -------------------------------
+// Utilities
+// -------------------------------
+const hex = (n, w=2) => n.toString(16).toUpperCase().padStart(w, '0');
+const parseNum = (tok) => {
+  // Supports $hex, %binary, decimal
+  tok = tok.trim();
+  if (tok.startsWith('$')) return parseInt(tok.slice(1), 16);
+  if (tok.startsWith('%')) return parseInt(tok.slice(1), 2);
+  return parseInt(tok, 10);
+};
+const isLabelDef = (line) => /:$/m.test(line.trim());
+
+// -------------------------------
+// Opcode table (subset, extendable)
+// mode keys: IMM, ZP, ABS, REL, IMP, ACC
+// -------------------------------
+
+
+const OPCODES = {
+   
+  // Load/Store
+  'LDA': { IMM:0xA9, ZP:0xA5, ZPX:0xB5, ABS:0xAD, ABSX:0xBD, ABSY:0xB9, INDX:0xA1, INDY:0xB1 },
+  'LDX': { IMM:0xA2, ZP:0xA6, ZPY:0xB6, ABS:0xAE, ABSY:0xBE },
+  'LDY': { IMM:0xA0, ZP:0xA4, ZPX:0xB4, ABS:0xAC, ABSX:0xBC },
+  'STA': { ZP:0x85, ZPX:0x95, ABS:0x8D, ABSX:0x9D, ABSY:0x99, INDX:0x81, INDY:0x91 },
+  'STX': { ZP:0x86, ZPY:0x96, ABS:0x8E },
+  'STY': { ZP:0x84, ZPX:0x94, ABS:0x8C },
+
+  // Transfers
+  'TAX': { IMP:0xAA }, 'TXA': { IMP:0x8A },
+  'TAY': { IMP:0xA8 }, 'TYA': { IMP:0x98 },
+  'TSX': { IMP:0xBA }, 'TXS': { IMP:0x9A },
+  'PHA': { IMP:0x48 }, 'PLA': { IMP:0x68 },
+  'PHP': { IMP:0x08 }, 'PLP': { IMP:0x28 },
+
+  // Arithmetic
+  'ADC': { IMM:0x69, ZP:0x65, ZPX:0x75, ABS:0x6D, ABSX:0x7D, ABSY:0x79, INDX:0x61, INDY:0x71 },
+  'SBC': { IMM:0xE9, ZP:0xE5, ZPX:0xF5, ABS:0xED, ABSX:0xFD, ABSY:0xF9, INDX:0xE1, INDY:0xF1 },
+  'INC': { ZP:0xE6, ZPX:0xF6, ABS:0xEE, ABSX:0xFE },
+  'INX': { IMP:0xE8 }, 'INY': { IMP:0xC8 },
+  'DEC': { ZP:0xC6, ZPX:0xD6, ABS:0xCE, ABSX:0xDE },
+  'DEX': { IMP:0xCA }, 'DEY': { IMP:0x88 },
+
+  // Logical
+  'AND': { IMM:0x29, ZP:0x25, ZPX:0x35, ABS:0x2D, ABSX:0x3D, ABSY:0x39, INDX:0x21, INDY:0x31 },
+  'ORA': { IMM:0x09, ZP:0x05, ZPX:0x15, ABS:0x0D, ABSX:0x1D, ABSY:0x19, INDX:0x01, INDY:0x11 },
+  'EOR': { IMM:0x49, ZP:0x45, ZPX:0x55, ABS:0x4D, ABSX:0x5D, ABSY:0x59, INDX:0x41, INDY:0x51 },
+  'BIT': { ZP:0x24, ABS:0x2C },
+
+  // Shifts/Rotates
+  'ASL': { ACC:0x0A, ZP:0x06, ZPX:0x16, ABS:0x0E, ABSX:0x1E },
+  'LSR': { ACC:0x4A, ZP:0x46, ZPX:0x56, ABS:0x4E, ABSX:0x5E },
+  'ROL': { ACC:0x2A, ZP:0x26, ZPX:0x36, ABS:0x2E, ABSX:0x3E },
+  'ROR': { ACC:0x6A, ZP:0x66, ZPX:0x76, ABS:0x6E, ABSX:0x7E },
+
+  // Jumps/Calls
+  'JMP': { ABS:0x4C, IND:0x6C },
+  'JSR': { ABS:0x20 },
+  'RTS': { IMP:0x60 },
+  'RTI': { IMP:0x40 },
+
+  // Branches
+  'BCC': { REL:0x90 }, 'BCS': { REL:0xB0 },
+  'BEQ': { REL:0xF0 }, 'BNE': { REL:0xD0 },
+  'BMI': { REL:0x30 }, 'BPL': { REL:0x10 },
+  'BVC': { REL:0x50 }, 'BVS': { REL:0x70 },
+
+  // Flags
+  'CLC': { IMP:0x18 }, 'SEC': { IMP:0x38 },
+  'CLI': { IMP:0x58 }, 'SEI': { IMP:0x78 },
+  'CLV': { IMP:0xB8 },
+  'CLD': { IMP:0xD8 }, 'SED': { IMP:0xF8 },
+
+  // Compare
+  'CMP': { IMM:0xC9, ZP:0xC5, ZPX:0xD5, ABS:0xCD, ABSX:0xDD, ABSY:0xD9, INDX:0xC1, INDY:0xD1 },
+  'CPX': { IMM:0xE0, ZP:0xE4, ABS:0xEC },
+  'CPY': { IMM:0xC0, ZP:0xC4, ABS:0xCC },
+
+  // Misc
+  'NOP': { IMP:0xEA },
+  'BRK': { IMP:0x00 }
+};
+
+// -------------------------------
+// Tokenize and parse lines
+// -------------------------------
+function preprocess(source) {
+  // Remove comments ; and //, split lines, keep labels
+  const lines = source
+    .split('\n')
+    .map(line => line.replace(/(;|\/\/).*/,'').trim())
+    .filter(line => line.length > 0);
+  return lines;
+}
+
+function parseOperand(opTok, labels, pc) {
+  // Determine addressing mode and valu
+ 
+  if (!opTok) return {mode:'IMP', bytes:[]};
+if (SYMBOLS.hasOwnProperty(opTok)) {
+    const v = SYMBOLS[opTok];
+    return {mode:'ABS', bytes:[v & 0xFF, (v >> 8) & 0xFF]};
+  }
+  // Accumulator form: e.g., ASL A (not implemented here, placeholder)
+  if (opTok.toUpperCase() === 'A') return {mode:'ACC', bytes:[]};
+
+  // Immediate #$nn
+  if (opTok.startsWith('#')) {
+    const v = parseNum(opTok.slice(1));
+    return {mode:'IMM', bytes:[v & 0xFF]};
+  }
+
+  // Relative labels or numeric
+  // If token is a known label and used by branch, we'll resolve later
+  if (/^[A-Za-z_]\w*$/.test(opTok)) {
+    return {mode:'REL_LBL', label:opTok};
+  }
+
+  // Absolute/zero-page $... or numeric
+  const v = parseNum(opTok);
+  if (v <= 0xFF) return {mode:'ZP', bytes:[v & 0xFF]};
+  return {mode:'ABS', bytes:[v & 0xFF, (v >> 8) & 0xFF]}; // little endian
+}
+
+// -------------------------------
+// First pass: resolve labels with .org and sizes
+// -------------------------------
+function firstPass(lines, base=0x8000) {
+  let pc = base;
+  const labels = {};
+  const items = []; // {addr, kind:'ins'|'byte'|'word'|'label', data...}
+
+  function addBytes(count) { pc += count; }
+
+  for (const raw of lines) {
+    // Label definition
+    if (isLabelDef(raw)) {
+      const name = raw.replace(':','').trim();
+      labels[name] = pc;
+      items.push({addr:pc, kind:'label', name});
+      continue;
+    }
+    // Directive .org / .byte / .word
+    if (raw.startsWith('.')) {
+      const [dir, rest] = raw.split(/\s+/, 2);
+      if (dir === '.org') {
+        const v = parseNum(rest);
+        pc = v;
+        items.push({addr:pc, kind:'org', value:v});
+      } else if (dir === '.byte') {
+        const values = rest.split(',').map(s => parseNum(s.trim()) & 0xFF);
+        items.push({addr:pc, kind:'byte', values});
+        addBytes(values.length);
+      } else if (dir === '.word') {
+        const values = rest.split(',').map(s => parseNum(s.trim()) & 0xFFFF);
+        items.push({addr:pc, kind:'word', values});
+        addBytes(values.length * 2);
+      } else {
+        throw new Error('Unknown directive: ' + dir);
+      }
+      continue;
+    }
+    // Instruction
+    const [mnRaw, ...rest] = raw.split(/\s+/, 2);
+    const mnemonic = mnRaw.toUpperCase();
+    const operandTok = rest.length ? rest[0].trim() : null;
+    const opTable = OPCODES[mnemonic];
+    if (!opTable) throw new Error('Unknown mnemonic: ' + mnemonic);
+
+    // Predict size from operand
+    let size = 1; // opcode
+    if (operandTok) {
+      if (operandTok.startsWith('#')) size += 1; // immediate
+      else {
+        const vTok = operandTok.startsWith('$') || operandTok.startsWith('%') || /^\d/.test(operandTok);
+        if (vTok) {
+          const v = parseNum(operandTok);
+          size += (v <= 0xFF ? 1 : 2);
+        } else {
+          // label or branch relative → assume 1 byte for relative, else 2 byte if ABS
+          // we'll decide in second pass; for branches REL it's 1
+          if (mnemonic.startsWith('B')) size += 1;
+          else size += 2;
+        }
+      }
+    }
+    items.push({addr:pc, kind:'ins', raw, mnemonic, operandTok});
+    addBytes(size);
+  }
+
+  return {labels, items};
+}
+
+// -------------------------------
+// Second pass: emit bytes into PRG image
+// -------------------------------
+function secondPass(first, base=0x8000) {
+  const PRG_SIZE = 0x4000; // 16KB
+  const prg = new Uint8Array(PRG_SIZE); // zero initialized
+  let pc = base;
+
+  function putByte(addr, b) {
+    const off = addr - base;
+    if (off < 0 || off >= PRG_SIZE) throw new Error(`Address out of PRG range: $${hex(addr,4)}`);
+    prg[off] = b & 0xFF;
+  }
+  function putBytes(addr, arr) { arr.forEach((b,i)=>putByte(addr+i,b)); }
+
+  for (const it of first.items) {
+    if (it.kind === 'org') { pc = it.value; continue; }
+    if (it.kind === 'label') continue;
+    if (it.kind === 'byte') { putBytes(pc, it.values); pc += it.values.length; continue; }
+    if (it.kind === 'word') {
+      for (const w of it.values) {
+        putByte(pc, w & 0xFF);
+        putByte(pc+1, (w>>8)&0xFF);
+        pc += 2;
+      }
+      continue;
+    }
+    if (it.kind === 'ins') {
+      const mnemonic = it.mnemonic;
+      const operandTok = it.operandTok;
+      const opTable = OPCODES[mnemonic];
+      if (!opTable) throw new Error('Unknown mnemonic in pass2: ' + mnemonic);
+
+      let mode = 'IMP';
+      let operandBytes = [];
+
+      if (operandTok) {
+        // Branch?
+        if (mnemonic.startsWith('B')) {
+          // Resolve label relative
+          let targetAddr;
+          if (/^[A-Za-z_]\w*$/.test(operandTok)) {
+            if (!(operandTok in first.labels)) throw new Error(`Undefined label: ${operandTok}`);
+            targetAddr = first.labels[operandTok];
+          } else {
+            targetAddr = parseNum(operandTok);
+          }
+          // relative offset from next PC
+          const insLen = 2; // branch size
+          const nextPc = it.addr + insLen;
+          let rel = targetAddr - nextPc; // signed 8-bit
+          if (rel < -128 || rel > 127) throw new Error(`Branch out of range: ${mnemonic} ${operandTok}`);
+          mode = 'REL';
+          operandBytes = [ (rel & 0xFF) ];
+        } else {
+          // Non-branch addressing
+          if (operandTok.startsWith('#')) {
+            mode = 'IMM';
+            operandBytes = [ parseNum(operandTok.slice(1)) & 0xFF ];
+          } else if (/^[A-Za-z_]\w*$/.test(operandTok)) {
+            // Label absolute
+            const addr = first.labels[operandTok];
+            if (addr == null) throw new Error(`Undefined label: ${operandTok}`);
+            mode = 'ABS';
+            operandBytes = [ addr & 0xFF, (addr>>8)&0xFF ];
+          } else {
+            const v = parseNum(operandTok);
+            if (v <= 0xFF && opTable.ZP) { mode = 'ZP'; operandBytes = [v & 0xFF]; }
+            else { mode = 'ABS'; operandBytes = [v & 0xFF, (v>>8)&0xFF]; }
+          }
+        }
+      }
+
+      const opcode = opTable[mode];
+      if (opcode == null) throw new Error(`Addressing mode not supported for ${mnemonic}: ${mode}`);
+
+      putByte(pc, opcode);
+      for (let i=0;i<operandBytes.length;i++) putByte(pc+1+i, operandBytes[i]);
+      pc += 1 + operandBytes.length;
+      continue;
+    }
+  }
+
+  // Place vectors at end of PRG ($BFFA-$BFFF mirrors to $FFFA-$FFFF)
+  const VEC_BASE = base + PRG_SIZE - 6; // $BFFA for 16KB PRG
+  const nmiVector = 0x8000;   // point to reset for simplicity
+  const rstVector = 0x8000;   // reset entry
+  const irqVector = 0x8000;   // point somewhere safe
+
+  // NMI
+  putByte(VEC_BASE+0, nmiVector & 0xFF);
+  putByte(VEC_BASE+1, (nmiVector>>8)&0xFF);
+  // RESET
+  putByte(VEC_BASE+2, rstVector & 0xFF);
+  putByte(VEC_BASE+3, (rstVector>>8)&0xFF);
+  // IRQ/BRK
+  putByte(VEC_BASE+4, irqVector & 0xFF);
+  putByte(VEC_BASE+5, (irqVector>>8)&0xFF);
+
+  return prg;
+}
+
+// -------------------------------
+// Build iNES file: header + PRG + CHR(8KB)
+// -------------------------------
+function buildINES(prg) {
+  const header = new Uint8Array(16);
+  header[0] = 0x4E; // 'N'
+  header[1] = 0x45; // 'E'
+  header[2] = 0x53; // 'S'
+  header[3] = 0x1A;
+  header[4] = 1;    // PRG banks (16KB)
+  header[5] = 1;    // CHR banks (8KB) - provide empty CHR
+  header[6] = 0x00; // flags6: NROM, horizontal mirroring default (0)
+  header[7] = 0x00; // flags7
+  // rest zeros
+
+  const chr = new Uint8Array(0x2000); // 8KB blank
+  const rom = new Uint8Array(header.length + prg.length + chr.length);
+  rom.set(header, 0);
+  rom.set(prg, header.length);
+  rom.set(chr, header.length + prg.length);
+  return rom;
+}
+
+// -------------------------------
+// Hex preview
+// -------------------------------
+function prgHexDump(prg, base=0x8000) {
+  let out = '';
+  for (let i=0;i<prg.length;i+=16) {
+    out += `$${hex(base+i,4)}: `;
+    const row = [];
+    for (let j=0;j<16 && i+j<prg.length;j++) row.push(hex(prg[i+j]));
+    out += row.join(' ') + '\n';
+  }
+  return out;
+}
+
+// -------------------------------
+// Sample source (minimal safe reset loop)
+// -------------------------------
+const SAMPLE = `; Minimal NES program: set up and loop
+.org $8000
+
+Start:
+  SEI           ; disable interrupts
+  CLD           ; clear decimal (2A03 ignores decimal mode, safe)
+  LDX #$FF
+  TXA
+  TAX           ; ensure X/A set
+Forever:
+  NOP
+  JMP Forever
+
+; Place some data
+.org $8100
+Data:
+  .byte $00, $01, $02, $03
+
+; Simple branch demo
+.org $8200
+Counter:
+  LDX #$05
+Loop:
+  DEX
+  BNE Loop
+  BRK
+`;
+
+document.getElementById('src').value = SAMPLE;
+
+// -------------------------------
+// Assemble handler
+// -------------------------------
+document.getElementById('assemble').addEventListener('click', () => {
+  const src = document.getElementById('src').value;
+  const msg = document.getElementById('msg');
+  const hexView = document.getElementById('hex');
+  const link = document.getElementById('download');
+  msg.textContent = '';
+  hexView.textContent = '';
+  link.style.display = 'none';
+
+  try {
+    const lines = preprocess(src);
+    const fp = firstPass(lines, 0x8000);
+    const prg = secondPass(fp, 0x8000);
+    const rom = buildINES(prg);
+
+    // Hex preview
+    hexView.textContent = prgHexDump(prg, 0x8000);
+
+    // Download link
+    const blob = new Blob([rom], {type:'application/octet-stream'});
+    const url = URL.createObjectURL(blob);
+    link.href = url;
+    link.style.display = 'inline-block';
+    msg.textContent = 'Assemble OK. Download and run in any NES emulator.';
+  } catch (e) {
+    msg.textContent = 'Error: ' + e.message;
+  }
+});
+</script>
+</body>
+</html>
