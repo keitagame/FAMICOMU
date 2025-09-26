@@ -16,6 +16,8 @@
   <body>
     <h1>MML Composer</h1>
     <p class="small">
+      
+
       各行が独立したトラックとして同時に再生されます。例は下にあります。
     </p>
     <textarea id="mml"></textarea>
@@ -645,6 +647,60 @@ function scheduleADSR(g, t, dur, {a=0.01, d=0.08, s=0.6, r=0.08, peak=1.0}) {
       
 
       const engine = new Engine();
+      function makePC98FM(ctx, {ratio, index, adsr, gain=0.8, pan=0}) {
+  const out = ctx.createGain(); out.gain.value = gain;
+  const p = new StereoPannerNode(ctx, { pan }); out.connect(p).connect(engine.master);
+
+  return {
+    start(t, freq, dur) {
+      const car = ctx.createOscillator();
+      const mod = ctx.createOscillator();
+      const mg = ctx.createGain();
+
+      car.type = 'square';
+      mod.type = 'sawtooth';
+
+      car.frequency.setValueAtTime(freq, t);
+      mod.frequency.setValueAtTime(freq * ratio, t);
+      mg.gain.setValueAtTime(index, t);
+
+      mod.connect(mg).connect(car.frequency);
+
+      const g = ctx.createGain(); g.connect(out);
+      // ADSR
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(1.0, t + adsr.a);
+      g.gain.linearRampToValueAtTime(adsr.s, t + adsr.a + adsr.d);
+      g.gain.setValueAtTime(adsr.s, t + dur);
+      g.gain.linearRampToValueAtTime(0.0001, t + dur + adsr.r);
+
+      car.connect(g);
+      car.start(t); mod.start(t);
+      car.stop(t + dur + adsr.r + 0.0001);
+      mod.stop(t + dur + adsr.r + 0.0001);
+    },
+    stop(_) {}
+  };
+}
+
+// 10種類のFM音色を登録
+const presets = [
+  {name:'pc_bell', ratio:2,   index:40, adsr:{a:0.01,d:0.2,s:0.3,r:0.4}}, // ベル
+  {name:'pc_epiano', ratio:3, index:20, adsr:{a:0.01,d:0.15,s:0.5,r:0.3}}, // エレピ
+  {name:'pc_bass', ratio:1,   index:60, adsr:{a:0.005,d:0.1,s:0.7,r:0.2}}, // ベース
+  {name:'pc_brass', ratio:1.5,index:25, adsr:{a:0.005,d:0.12,s:0.6,r:0.25}}, // ブラス
+  {name:'pc_strings',ratio:2.5,index:15,adsr:{a:0.05,d:0.2,s:0.7,r:0.5}}, // ストリングス
+  {name:'pc_lead', ratio:2,   index:35, adsr:{a:0.005,d:0.08,s:0.6,r:0.2}}, // リード
+  {name:'pc_pad',  ratio:1.2, index:10, adsr:{a:0.2,d:0.3,s:0.8,r:0.8}},   // パッド
+  {name:'pc_organ',ratio:4,   index:5,  adsr:{a:0.01,d:0.05,s:0.9,r:0.2}}, // オルガン
+  {name:'pc_clav', ratio:2.8, index:18, adsr:{a:0.005,d:0.05,s:0.4,r:0.1}}, // クラビ
+  {name:'pc_synlead',ratio:3, index:50, adsr:{a:0.005,d:0.1,s:0.5,r:0.3}}  // シンセリード
+];
+
+presets.forEach(p => {
+  engine.registerInstrument(p.name, (ctx, opts={}) => makePC98FM(ctx, {...p, ...opts}));
+});
+
       engine.registerInstrument('vrcc', (ctx, opts={}) => {
   const { type='pulse', duty=0.5, vibrato=0, gain=0.8, pan=0 } = opts;
   const out = ctx.createGain(); out.gain.value = gain;
