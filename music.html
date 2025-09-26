@@ -552,6 +552,54 @@
           },
         };
       }
+      // Duty付きPulseのPeriodicWave生成（NES/PSG系）
+function createPulseWave(ctx, duty=0.5, harmonics=64) {
+  // Fourier係数から擬似パルスを合成
+  const real = new Float32Array(harmonics);
+  const imag = new Float32Array(harmonics);
+  // パルス波は奇偶両方の高調波を持つが、dutyで重みが変化
+  for (let n = 1; n < harmonics; n++) {
+    const a = Math.sin(Math.PI * n * duty) / (Math.PI * n);
+    // sawの係数に矩形変換：cos/sinの分配
+    real[n] = 0;        // 実部を0、虚部に成分を持たせる（位相90°）
+    imag[n] = 2 * a;    // 幅dutyの矩形のフーリエ係数
+  }
+  return ctx.createPeriodicWave(real, imag, { disableNormalization: false });
+}
+
+// 32サンプル程度の波形配列からPeriodicWave（Namco/FDS風）
+function createWavetable(ctx, table) {
+  const N = 64; // 倍音数（解析側）
+  const real = new Float32Array(N);
+  const imag = new Float32Array(N);
+  // 簡略: tableをそのまま周期関数とみなしDFT
+  const L = table.length;
+  for (let k = 1; k < N; k++) {
+    let re = 0, im = 0;
+    for (let n = 0; n < L; n++) {
+      const x = table[n];
+      const phase = 2 * Math.PI * k * n / L;
+      re += x * Math.cos(phase);
+      im += x * Math.sin(phase);
+    }
+    real[k] = re / L;
+    imag[k] = im / L;
+  }
+  return ctx.createPeriodicWave(real, imag, { disableNormalization: false });
+}
+
+// ADSRユーティリティ
+function scheduleADSR(g, t, dur, {a=0.01, d=0.08, s=0.6, r=0.08, peak=1.0}) {
+  const tA = t + a, tD = tA + d, tS = Math.max(t + dur - r, tA);
+  const tR = tS + r;
+  g.cancelScheduledValues(t);
+  g.setValueAtTime(0.0001, t);
+  g.linearRampToValueAtTime(peak, tA);
+  g.linearRampToValueAtTime(peak * s, tD);
+  g.setValueAtTime(peak * s, tS);
+  g.linearRampToValueAtTime(0.0001, tR);
+  return { stopAt: tR };
+}
 
       function FMInstrument(
         ctx,
@@ -597,6 +645,191 @@
       
 
       const engine = new Engine();
+      engine.registerInstrument('vrcc', (ctx, opts={}) => {
+  const { type='pulse', duty=0.5, vibrato=0, gain=0.8, pan=0 } = opts;
+  const out = ctx.createGain(); out.gain.value = gain;
+  const p = new StereoPannerNode(ctx, { pan }); out.connect(p).connect(engine.master);
+
+  return {
+    start(t, freq, dur) {
+      const g = ctx.createGain(); g.connect(out);
+      const envStop = scheduleADSR(g.gain, t, dur, { a:0.005, d:0.06, s:0.7, r:0.10, peak:1.0 });
+
+      const osc = ctx.createOscillator();
+      if (type === 'saw') {
+        osc.type = 'sawtooth';
+      } else {
+        // pulse
+        const pw = createPulseWave(ctx, duty);
+        osc.setPeriodicWave(pw);
+      }
+      osc.frequency.setValueAtTime(freq, t);
+
+      // Vibrato (±cent)
+      if (vibrato > 0) {
+        const lfo = ctx.createOscillator();
+        const lfoGain = ctx.createGain();
+        lfo.frequency.setValueAtTime(6, t);
+        lfoGain.gain.setValueAtTime(freq * (Math.pow(2, vibrato/1200) - 1), t);
+        lfo.connect(lfoGain).connect(osc.frequency);
+        lfo.start(t); lfo.stop(envStop.stopAt + 0.02);
+      }
+
+      osc.connect(g);
+      osc.start(t);
+      osc.stop(envStop.stopAt + 0.02);
+    },
+    stop(_) {}
+  };
+});
+engine.registerInstrument('vrcs', (ctx, opts={}) => {
+  const { patch=0, gain=0.8, pan=0 } = opts;
+  const out = ctx.createGain(); out.gain.value = gain;
+  const p = new StereoPannerNode(ctx, { pan }); out.connect(p).connect(engine.master);
+
+  // パッチ定義（ratio/index/feedbackなどの簡易版）
+  const patches = [
+    { ratio:2, index:40, feedback:0.2, a:0.01, d:0.08, s:0.6, r:0.12 }, // Lead
+    { ratio:3, index:25, feedback:0.1, a:0.005, d:0.06, s:0.5, r:0.10 }, // Brass
+    { ratio:1.5, index:60, feedback:0.3, a:0.02, d:0.12, s:0.4, r:0.18 }, // Bell
+    { ratio:1, index:20, feedback:0.05, a:0.005, d:0.05, s:0.7, r:0.10 }, // Soft
+    // 以降は同様に埋めていける
+  ];
+  const P = patches[patch % patches.length];
+
+  return {
+    start(t, freq, dur) {
+      const car = ctx.createOscillator(); car.type = 'sine';
+      const mod = ctx.createOscillator(); mod.type = 'sine';
+      const mg = ctx.createGain();
+      const fb = ctx.createGain(); fb.gain.value = P.feedback;
+
+      car.frequency.setValueAtTime(freq, t);
+      mod.frequency.setValueAtTime(freq * P.ratio, t);
+      mg.gain.setValueAtTime(P.index, t);
+
+      // 簡易フィードバック（キャリアの出力を少し周波数へ）
+      const fbGain = ctx.createGain();
+      fbGain.gain.value = freq * 0.001;
+      car.connect(fbGain).connect(car.frequency);
+
+      mod.connect(mg).connect(car.frequency);
+      const g = ctx.createGain(); g.connect(out);
+      const envStop = scheduleADSR(g.gain, t, dur, { a:P.a, d:P.d, s:P.s, r:P.r, peak:1.0 });
+
+      car.connect(g);
+      mod.start(t); car.start(t);
+      mod.stop(envStop.stopAt + 0.02); car.stop(envStop.stopAt + 0.02);
+    },
+    stop(_) {}
+  };
+});
+engine.registerInstrument('n', (ctx, opts={}) => {
+  const { gain=0.8, pan=0, table=null } = opts;
+  const out = ctx.createGain(); out.gain.value = gain;
+  const p = new StereoPannerNode(ctx, { pan }); out.connect(p).connect(engine.master);
+
+  const defaultTable = [
+    0,0.4,0.8,1,0.8,0.4,0,-0.4,-0.8,-1,-0.8,-0.4,0,0.2,0.4,0.6,
+    0.8,1,0.8,0.6,0.4,0.2,0,-0.2,-0.4,-0.6,-0.8,-1,-0.8,-0.6,-0.4,-0.2
+  ];
+
+  const wav = createWavetable(ctx, (table && table.length? table : defaultTable));
+
+  return {
+    start(t, freq, dur) {
+      const osc = ctx.createOscillator();
+      osc.setPeriodicWave(wav);
+      osc.frequency.setValueAtTime(freq, t);
+
+      const g = ctx.createGain(); g.connect(out);
+      const envStop = scheduleADSR(g.gain, t, dur, { a:0.005, d:0.06, s:0.7, r:0.10 });
+      osc.connect(g);
+      osc.start(t);
+      osc.stop(envStop.stopAt + 0.02);
+    },
+    stop(_) {}
+  };
+});
+engine.registerInstrument('fds', (ctx, opts={}) => {
+  const { gain=0.8, pan=0, table=null, modDepth=0.02, modRate=5 } = opts;
+  const out = ctx.createGain(); out.gain.value = gain;
+  const p = new StereoPannerNode(ctx, { pan }); out.connect(p).connect(engine.master);
+
+  const defaultTable = Array.from({length:32}, (_,i)=> Math.sin(2*Math.PI*i/32)); // 32点サイン
+  const wav = createWavetable(ctx, table ?? defaultTable);
+
+  return {
+    start(t, freq, dur) {
+      const osc = ctx.createOscillator();
+      osc.setPeriodicWave(wav);
+      osc.frequency.setValueAtTime(freq, t);
+
+      // FDS風モジュレーション（周波数LFO）
+      const lfo = ctx.createOscillator();
+      const lfoGain = ctx.createGain();
+      lfo.frequency.setValueAtTime(modRate, t);
+      lfoGain.gain.setValueAtTime(freq * modDepth, t);
+      lfo.connect(lfoGain).connect(osc.frequency);
+
+      const g = ctx.createGain(); g.connect(out);
+      const envStop = scheduleADSR(g.gain, t, dur, { a:0.01, d:0.05, s:0.7, r:0.12 });
+
+      osc.connect(g);
+      lfo.start(t); osc.start(t);
+      lfo.stop(envStop.stopAt + 0.02); osc.stop(envStop.stopAt + 0.02);
+    },
+    stop(_) {}
+  };
+});
+engine.registerInstrument('sunb', (ctx, opts={}) => {
+  const { gain=0.8, pan=0, duty=0.5, envShape='sharp' } = opts;
+  const out = ctx.createGain(); out.gain.value = gain;
+  const p = new StereoPannerNode(ctx, { pan }); out.connect(p).connect(engine.master);
+  const pw = createPulseWave(ctx, duty);
+
+  const shapes = {
+    sharp: { a:0.002, d:0.05, s:0.6, r:0.08 },
+    soft:  { a:0.01,  d:0.08, s:0.7, r:0.12 },
+    stab:  { a:0.001, d:0.04, s:0.4, r:0.06 },
+  };
+  const E = shapes[envShape] ?? shapes.sharp;
+
+  return {
+    start(t, freq, dur) {
+      const osc = ctx.createOscillator();
+      osc.setPeriodicWave(pw);
+      osc.frequency.setValueAtTime(freq, t);
+      const g = ctx.createGain(); g.connect(out);
+      const envStop = scheduleADSR(g.gain, t, dur, E);
+      osc.connect(g);
+      osc.start(t);
+      osc.stop(envStop.stopAt + 0.02);
+    },
+    stop(_) {}
+  };
+});
+engine.registerInstrument('mmc', (ctx, opts={}) => {
+  const { gain=0.8, pan=0, duty=0.5 } = opts;
+  const out = ctx.createGain(); out.gain.value = gain;
+  const p = new StereoPannerNode(ctx, { pan }); out.connect(p).connect(engine.master);
+  const pw = createPulseWave(ctx, duty);
+
+  return {
+    start(t, freq, dur) {
+      const osc = ctx.createOscillator();
+      osc.setPeriodicWave(pw);
+      osc.frequency.setValueAtTime(freq, t);
+      const g = ctx.createGain(); g.connect(out);
+      const envStop = scheduleADSR(g.gain, t, dur, { a:0.003, d:0.06, s:0.65, r:0.10 });
+      osc.connect(g);
+      osc.start(t);
+      osc.stop(envStop.stopAt + 0.02);
+    },
+    stop(_) {}
+  };
+});
+
       engine.registerInstrument('eurobrass', (ctx, opts) => {
   const outGain = ctx.createGain();
   outGain.gain.value = opts.gain ?? 0.85;
