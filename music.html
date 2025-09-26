@@ -782,6 +782,101 @@ engine.registerInstrument('pc', (ctx, opts={}) => {
     stop(_) {}
   };
 });
+      // キックドラム
+engine.registerInstrument('kick', (ctx, opts={}) => {
+  const { gain=1.0, pan=0 } = opts;
+  const out = ctx.createGain(); out.gain.value = gain;
+  const p = new StereoPannerNode(ctx, { pan }); out.connect(p).connect(engine.master);
+
+  return {
+    start(t, _, dur=0.5) {
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(150, t);
+      osc.frequency.exponentialRampToValueAtTime(40, t + dur);
+
+      const g = ctx.createGain(); g.connect(out);
+      g.gain.setValueAtTime(1.0, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+
+      osc.connect(g);
+      osc.start(t);
+      osc.stop(t + dur + 0.01);
+    },
+    stop(_) {}
+  };
+});
+
+// スネアドラム
+engine.registerInstrument('snare', (ctx, opts={}) => {
+  const { gain=0.8, pan=0 } = opts;
+  const out = ctx.createGain(); out.gain.value = gain;
+  const p = new StereoPannerNode(ctx, { pan }); out.connect(p).connect(engine.master);
+
+  return {
+    start(t, _, dur=0.2) {
+      // ノイズ
+      const bufferSize = ctx.sampleRate * dur;
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i=0; i<bufferSize; i++) data[i] = Math.random()*2-1;
+      const noise = ctx.createBufferSource();
+      noise.buffer = buffer;
+
+      const g = ctx.createGain(); g.connect(out);
+      g.gain.setValueAtTime(1.0, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+
+      noise.connect(g);
+      noise.start(t);
+      noise.stop(t + dur + 0.01);
+
+      // ボディ（短いトーン）
+      const osc = ctx.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(180, t);
+      const og = ctx.createGain(); og.connect(out);
+      og.gain.setValueAtTime(0.5, t);
+      og.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      osc.connect(og);
+      osc.start(t);
+      osc.stop(t + dur + 0.01);
+    },
+    stop(_) {}
+  };
+});
+
+// ハイハット
+engine.registerInstrument('hihat', (ctx, opts={}) => {
+  const { gain=0.5, pan=0 } = opts;
+  const out = ctx.createGain(); out.gain.value = gain;
+  const p = new StereoPannerNode(ctx, { pan }); out.connect(p).connect(engine.master);
+
+  return {
+    start(t, _, dur=0.15) {
+      const bufferSize = ctx.sampleRate * dur;
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i=0; i<bufferSize; i++) data[i] = (Math.random()*2-1) * 0.5;
+      const noise = ctx.createBufferSource();
+      noise.buffer = buffer;
+
+      const hp = ctx.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.frequency.value = 5000;
+
+      const g = ctx.createGain(); g.connect(out);
+      g.gain.setValueAtTime(1.0, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+
+      noise.connect(hp).connect(g);
+      noise.start(t);
+      noise.stop(t + dur + 0.01);
+    },
+    stop(_) {}
+  };
+});
+
 engine.registerInstrument('vrcs', (ctx, opts={}) => {
   const { patch=0, gain=0.8, pan=0 } = opts;
   const out = ctx.createGain(); out.gain.value = gain;
