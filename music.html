@@ -977,6 +977,95 @@ engine.registerInstrument('fds', (ctx, opts={}) => {
     stop(_) {}
   };
 });
+      // タム (低めのトーン＋短い減衰)
+engine.registerInstrument('tom', (ctx, opts={}) => {
+  const { gain=0.9, pan=0, freq=120 } = opts;
+  const out = ctx.createGain(); out.gain.value = gain;
+  const p = new StereoPannerNode(ctx, { pan }); out.connect(p).connect(engine.master);
+
+  return {
+    start(t, _, dur=0.4) {
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, t);
+      osc.frequency.exponentialRampToValueAtTime(freq/2, t + dur);
+
+      const g = ctx.createGain(); g.connect(out);
+      g.gain.setValueAtTime(1.0, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+
+      osc.connect(g);
+      osc.start(t);
+      osc.stop(t + dur + 0.01);
+    },
+    stop(_) {}
+  };
+});
+
+// クラップ (短いノイズを複数重ねる)
+engine.registerInstrument('clap', (ctx, opts={}) => {
+  const { gain=0.8, pan=0 } = opts;
+  const out = ctx.createGain(); out.gain.value = gain;
+  const p = new StereoPannerNode(ctx, { pan }); out.connect(p).connect(engine.master);
+
+  function noiseBurst(t, dur) {
+    const bufferSize = ctx.sampleRate * dur;
+    const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i=0; i<bufferSize; i++) data[i] = Math.random()*2-1;
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    return src;
+  }
+
+  return {
+    start(t, _, dur=0.25) {
+      const delays = [0, 0.02, 0.04]; // 拍手の重なり
+      delays.forEach(d => {
+        const src = noiseBurst(t, dur);
+        const g = ctx.createGain(); g.connect(out);
+        g.gain.setValueAtTime(1.0, t+d);
+        g.gain.exponentialRampToValueAtTime(0.001, t+d+dur);
+        src.connect(g);
+        src.start(t+d);
+        src.stop(t+d+dur+0.01);
+      });
+    },
+    stop(_) {}
+  };
+});
+
+// クラッシュシンバル (長めのノイズ＋ハイパス)
+engine.registerInstrument('crash', (ctx, opts={}) => {
+  const { gain=0.7, pan=0 } = opts;
+  const out = ctx.createGain(); out.gain.value = gain;
+  const p = new StereoPannerNode(ctx, { pan }); out.connect(p).connect(engine.master);
+
+  return {
+    start(t, _, dur=2.0) {
+      const bufferSize = ctx.sampleRate * dur;
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i=0; i<bufferSize; i++) data[i] = Math.random()*2-1;
+      const noise = ctx.createBufferSource();
+      noise.buffer = buffer;
+
+      const hp = ctx.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.frequency.value = 4000;
+
+      const g = ctx.createGain(); g.connect(out);
+      g.gain.setValueAtTime(1.0, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+
+      noise.connect(hp).connect(g);
+      noise.start(t);
+      noise.stop(t + dur + 0.01);
+    },
+    stop(_) {}
+  };
+});
+
 engine.registerInstrument('sunb', (ctx, opts={}) => {
   const { gain=0.8, pan=0, duty=0.5, envShape='sharp' } = opts;
   const out = ctx.createGain(); out.gain.value = gain;
