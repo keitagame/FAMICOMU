@@ -700,6 +700,50 @@ const presets = [
 presets.forEach(p => {
   engine.registerInstrument(p.name, (ctx, opts={}) => makePC98FM(ctx, {...p, ...opts}));
 });
+engine.registerInstrument('pc', (ctx, opts={}) => {
+  const {
+    gain=0.9, pan=0, ratio=1.0, index=55,
+    adsr={a:0.004,d:0.12,s:0.75,r:0.18,peak:1.0},
+    lpCut=1800, subMix=0.2
+  } = opts;
+
+  const out = ctx.createGain(); out.gain.value = gain;
+  const p = new StereoPannerNode(ctx, { pan });
+  const lpf = ctx.createBiquadFilter();
+  lpf.type = 'lowpass'; lpf.frequency.value = lpCut;
+  out.connect(p).connect(lpf).connect(engine.master);
+
+  return {
+    start(t, freq, dur) {
+      // キャリア
+      const car = ctx.createOscillator(); car.type = 'square';
+      car.frequency.setValueAtTime(freq, t);
+
+      // モジュレーター
+      const mod = ctx.createOscillator(); mod.type = 'sawtooth';
+      mod.frequency.setValueAtTime(freq * ratio, t);
+      const mg = ctx.createGain(); mg.gain.setValueAtTime(index, t);
+      mod.connect(mg).connect(car.frequency);
+
+      // サブオシレーター
+      const sub = ctx.createOscillator(); sub.type = 'sine';
+      sub.frequency.setValueAtTime(freq/2, t);
+      const subGain = ctx.createGain(); subGain.gain.value = subMix;
+
+      // 出力ゲイン＋ADSR
+      const g = ctx.createGain(); g.connect(out);
+      const envStop = scheduleADSR(g.gain, t, dur, adsr);
+
+      car.connect(g);
+      sub.connect(subGain).connect(g);
+
+      car.start(t); mod.start(t); sub.start(t);
+      const stopT = envStop.stopAt + 0.02;
+      car.stop(stopT); mod.stop(stopT); sub.stop(stopT);
+    },
+    stop(_) {}
+  };
+});
 
       engine.registerInstrument('vrcc', (ctx, opts={}) => {
   const { type='pulse', duty=0.5, vibrato=0, gain=0.8, pan=0 } = opts;
