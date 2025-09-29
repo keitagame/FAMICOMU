@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="ja">
   <head>
@@ -5,13 +6,35 @@
     <title>NES Emulator (JS, skeleton)</title>
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <style>
-      :root { color-scheme: light dark; }
-      body { font-family: ui-sans-serif, system-ui; margin: 16px; }
-      header { display:flex; gap:12px; align-items:center; margin-bottom:12px; }
-      canvas { image-rendering: pixelated; border:1px solid #ccc; background:#000; }
-      .row { display:flex; gap:12px; align-items:center; }
-      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-      small { opacity:.7; }
+      :root {
+        color-scheme: light dark;
+      }
+      body {
+        font-family: ui-sans-serif, system-ui;
+        margin: 16px;
+      }
+      header {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+      canvas {
+        image-rendering: pixelated;
+        border: 1px solid #ccc;
+        background: #000;
+      }
+      .row {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+      }
+      .mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      small {
+        opacity: 0.7;
+      }
     </style>
   </head>
   <body>
@@ -983,6 +1006,52 @@
           }
         }
       }
+      class Mapper144 extends IMapper {
+        constructor(cart, bus) {
+          super(cart, bus);
+          this.prgBanks = this.prg.length / 0x8000; // 32KB 単位
+          this.chrBanks = this.chr.length / 0x2000; // 8KB 単位
+          this.prgBank = 0;
+          this.chrBank = 0;
+        }
+
+        cpuRead(addr) {
+          if (addr < 0x6000) return 0;
+          if (addr < 0x8000) return this.prgRAM[addr - 0x6000];
+
+          // 32KB バンク切り替え
+          const base = (this.prgBank % this.prgBanks) * 0x8000;
+          return this.prg[base + (addr - 0x8000)];
+        }
+
+        cpuWrite(addr, val) {
+          val &= 0xff;
+          if (addr >= 0x6000 && addr < 0x8000) {
+            this.prgRAM[addr - 0x6000] = val;
+            return;
+          }
+          if (addr >= 0x8000) {
+            this.prgBank = val & 0x0f; // 下位4bit → PRG
+            this.chrBank = (val >> 4) & 0x0f; // 上位4bit → CHR
+          }
+        }
+
+        ppuRead(addr) {
+          if (addr < 0x2000) {
+            const base = (this.chrBank % this.chrBanks) * 0x2000;
+            return this.chr[base + addr];
+          }
+          return 0;
+        }
+
+        ppuWrite(addr, val) {
+          if (this.chrIsRAM && addr < 0x2000) {
+            const base = (this.chrBank % this.chrBanks) * 0x2000;
+            this.chr[base + addr] = val & 0xff;
+          }
+        }
+      }
+
       class Mapper148 extends IMapper {
         constructor(cart, bus) {
           super(cart, bus);
@@ -1015,6 +1084,51 @@
           if (addr >= 0x8000) {
             this.prgBank = val & 0x0f; // 下位4bit → PRGバンク
             this.chrBank = (val >> 4) & 0x0f; // 上位4bit → CHRバンク
+          }
+        }
+
+        ppuRead(addr) {
+          if (addr < 0x2000) {
+            const base = (this.chrBank % this.chrBanks) * 0x2000;
+            return this.chr[base + addr];
+          }
+          return 0;
+        }
+
+        ppuWrite(addr, val) {
+          if (this.chrIsRAM && addr < 0x2000) {
+            const base = (this.chrBank % this.chrBanks) * 0x2000;
+            this.chr[base + addr] = val & 0xff;
+          }
+        }
+      }
+      class Mapper228 extends IMapper {
+        constructor(cart, bus) {
+          super(cart, bus);
+          this.prgBanks = this.prg.length / 0x8000; // 32KB 単位
+          this.chrBanks = this.chr.length / 0x2000; // 8KB 単位
+          this.prgBank = 0;
+          this.chrBank = 0;
+        }
+
+        cpuRead(addr) {
+          if (addr < 0x6000) return 0;
+          if (addr < 0x8000) return this.prgRAM[addr - 0x6000];
+
+          // 32KB バンク切り替え
+          const base = (this.prgBank % this.prgBanks) * 0x8000;
+          return this.prg[base + (addr - 0x8000)];
+        }
+
+        cpuWrite(addr, val) {
+          val &= 0xff;
+          if (addr >= 0x6000 && addr < 0x8000) {
+            this.prgRAM[addr - 0x6000] = val;
+            return;
+          }
+          if (addr >= 0x8000) {
+            this.prgBank = val & 0x0f; // 下位4bit → PRG
+            this.chrBank = (val >> 4) & 0x0f; // 上位4bit → CHR
           }
         }
 
@@ -2375,8 +2489,14 @@
             case 79:
               this.mapper = new Mapper79(cart, this);
               break;
+            case 144:
+              this.mapper = new Mapper144(cart, this);
+              break;
             case 148:
-              this.mapper = new Mapper148(cart,this);
+              this.mapper = new Mapper148(cart, this);
+              break;
+            case 228:
+              this.mapper = new Mapper228(cart, this);
               break;
             default:
               throw new Error(`Unsupported mapper ${cart.mapper}`);
