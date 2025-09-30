@@ -39,6 +39,8 @@
   <body>
     <header>
       <input id="rom" type="file" accept=".nes" />
+      <button id="fullscreenBtn">Fullscreen</button>
+
       <button id="start" disabled>Start</button>
       <div class="mono" id="status">No ROM</div>
       <input type="text" id="myInput" value="30" />
@@ -2545,7 +2547,7 @@
               this.mapper = new Mapper79(cart, this);
               break;
             case 115:
-              this.mapper = new Mapper115(cart,this);
+              this.mapper = new Mapper115(cart, this);
               break;
             case 144:
               this.mapper = new Mapper144(cart, this);
@@ -2735,12 +2737,26 @@
       const fpsEl = document.getElementById("fps");
       const pcEl = document.getElementById("pc");
       const cycEl = document.getElementById("cyc");
-      const ppuEl =  document.getElementById("pcp");
-       const ppXEl =  document.getElementById("ppx");
-const ramEl =  document.getElementById("ram");
-       const mapperEl =  document.getElementById("mapper");
+      const ppuEl = document.getElementById("pcp");
+      const ppXEl = document.getElementById("ppx");
+      const ramEl = document.getElementById("ram");
+      const mapperEl = document.getElementById("mapper");
       let nes = new NES();
       let romBytes = null;
+
+      const fullscreenBtn = document.getElementById("fullscreenBtn");
+
+      fullscreenBtn.addEventListener("click", () => {
+        if (!document.fullscreenElement) {
+          // キャンバスをフルスクリーンに
+          canvas.requestFullscreen().catch((err) => {
+            console.error(`フルスクリーンにできません: ${err.message}`);
+          });
+        } else {
+          // フルスクリーン解除
+          document.exitFullscreen();
+        }
+      });
 
       romInput.addEventListener("change", async (e) => {
         const f = e.target.files[0];
@@ -2802,12 +2818,12 @@ const ramEl =  document.getElementById("ram");
           frames = 0;
           lastFpsTime = now;
         }
-      
-        ramEl.textContent = "0x"+nes.cpu.S.toString(16).padStart(4, "0");
-        mapperEl.textContent = "0x"+nes.cpu.P.toString(16).padStart(4, "0");
-        ppuEl.textContent = "0x"+nes.ppu.v.toString(16).padStart(4, "0");
-        ppXEl.textContent = "0x"+nes.ppu.t.toString(16).padStart(4, "0");
-        pcEl.textContent = "0x"+nes.cpu.PC.toString(16).padStart(4, "0");
+
+        ramEl.textContent = "0x" + nes.cpu.S.toString(16).padStart(4, "0");
+        mapperEl.textContent = "0x" + nes.cpu.P.toString(16).padStart(4, "0");
+        ppuEl.textContent = "0x" + nes.ppu.v.toString(16).padStart(4, "0");
+        ppXEl.textContent = "0x" + nes.ppu.t.toString(16).padStart(4, "0");
+        pcEl.textContent = "0x" + nes.cpu.PC.toString(16).padStart(4, "0");
         cycEl.textContent = nes.cpu.cycles.toString();
         console.log("CHR banks:", nes.bus.mapper.chrBankMap);
         console.log(
