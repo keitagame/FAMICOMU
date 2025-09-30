@@ -47,8 +47,13 @@
       <canvas id="screen" width="256" height="240"></canvas>
       <div>
         <div><b>FPS:</b> <span id="fps">0</span></div>
-        <div><b>CPU PC:</b> <span id="pc" class="mono">0000</span></div>
+        <div><b>CPU PC:</b> <span id="pc" class="mono">0x0000</span></div>
         <div><b>Cycles:</b> <span id="cyc" class="mono">0</span></div>
+        <div><b>VRAM V:</b><span id="pcp" class="mono">0x0000</span></div>
+        <div><b>VRAM T:</b><span id="ppx" class="mono">0x0000</span></div>
+        <div><b>CPU S:</b><span id="ram" class="mono">0x0000</span></div>
+        <div><b>CPU P:</b><span id="mapper" class="mono">0x0000</span></div>
+
         <small
           >Skeleton: Mapper0, iNES, PPU frame timing + NMI, CPU bus/IRQs, opcode
           hooks</small
@@ -2730,7 +2735,10 @@
       const fpsEl = document.getElementById("fps");
       const pcEl = document.getElementById("pc");
       const cycEl = document.getElementById("cyc");
-
+      const ppuEl =  document.getElementById("pcp");
+       const ppXEl =  document.getElementById("ppx");
+const ramEl =  document.getElementById("ram");
+       const mapperEl =  document.getElementById("mapper");
       let nes = new NES();
       let romBytes = null;
 
@@ -2794,7 +2802,12 @@
           frames = 0;
           lastFpsTime = now;
         }
-        pcEl.textContent = nes.cpu.PC.toString(16).padStart(4, "0");
+      
+        ramEl.textContent = "0x"+nes.cpu.S.toString(16).padStart(4, "0");
+        mapperEl.textContent = "0x"+nes.cpu.P.toString(16).padStart(4, "0");
+        ppuEl.textContent = "0x"+nes.ppu.v.toString(16).padStart(4, "0");
+        ppXEl.textContent = "0x"+nes.ppu.t.toString(16).padStart(4, "0");
+        pcEl.textContent = "0x"+nes.cpu.PC.toString(16).padStart(4, "0");
         cycEl.textContent = nes.cpu.cycles.toString();
         console.log("CHR banks:", nes.bus.mapper.chrBankMap);
         console.log(
