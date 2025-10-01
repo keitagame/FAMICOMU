@@ -35,17 +35,13 @@
       @instrument - dotted ., tie &, loops [ ... ]n
     </div>
     <script>
-      // ----------------------------
-      // Utility: frequency from pitch
-      // ----------------------------
+     
       function midiToFreq(midi) {
         return 440 * Math.pow(2, (midi - 69) / 12);
       }
       const NOTE_BASE = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 };
 
-      // ----------------------------
-      // Tokenizer (no regex)
-      // ----------------------------
+      
       class Reader {
         constructor(text) {
           this.text = text;
