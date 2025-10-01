@@ -155,7 +155,7 @@
         cpuRead(addr) {
           if (addr < 0x8000) return 0;
           let a = addr - 0x8000;
-          if (this.prgSize === 0x4000) a %= 0x4000; 
+          if (this.prgSize === 0x4000) a %= 0x4000;
           return this.prg[a];
         }
 
@@ -958,6 +958,74 @@
           return this.mirrorMode;
         }
       }
+      class Mapper75 extends IMapper {
+        constructor(cart, bus) {
+          super(cart, bus);
+          this.prgBanks = this.prg.length / 0x4000; // 16KB 単位
+          this.chrBanks = this.chr.length / 0x1000; // 4KB 単位
+          this.prgBank = 0;
+          this.chrBank0 = 0;
+          this.chrBank1 = 1;
+          this.fixedBank = this.prgBanks - 1;
+        }
+
+        cpuRead(addr) {
+          if (addr < 0x6000) return 0;
+          if (addr < 0x8000) return this.prgRAM[addr - 0x6000];
+
+          if (addr < 0xc000) {
+            const base = (this.prgBank % this.prgBanks) * 0x4000;
+            return this.prg[base + (addr - 0x8000)];
+          } else {
+            const base = this.fixedBank * 0x4000;
+            return this.prg[base + (addr - 0xc000)];
+          }
+        }
+
+        cpuWrite(addr, val) {
+          val &= 0xff;
+          if (addr >= 0x6000 && addr < 0x8000) {
+            this.prgRAM[addr - 0x6000] = val;
+            return;
+          }
+
+          switch (addr & 0xf000) {
+            case 0x8000:
+              this.prgBank = val & 0x0f; // PRG 16KB
+              break;
+            case 0x9000:
+              this.chrBank0 = val & 0x1f; // CHR 4KB (lower)
+              break;
+            case 0xa000:
+              this.chrBank1 = val & 0x1f; // CHR 4KB (upper)
+              break;
+          }
+        }
+
+        ppuRead(addr) {
+          if (addr < 0x1000) {
+            const base = (this.chrBank0 % this.chrBanks) * 0x1000;
+            return this.chr[base + addr];
+          } else if (addr < 0x2000) {
+            const base = (this.chrBank1 % this.chrBanks) * 0x1000;
+            return this.chr[base + (addr - 0x1000)];
+          }
+          return 0;
+        }
+
+        ppuWrite(addr, val) {
+          if (this.chrIsRAM && addr < 0x2000) {
+            if (addr < 0x1000) {
+              const base = (this.chrBank0 % this.chrBanks) * 0x1000;
+              this.chr[base + addr] = val & 0xff;
+            } else {
+              const base = (this.chrBank1 % this.chrBanks) * 0x1000;
+              this.chr[base + (addr - 0x1000)] = val & 0xff;
+            }
+          }
+        }
+      }
+
       class Mapper79 extends IMapper {
         constructor(cart, bus) {
           super(cart, bus);
@@ -2541,7 +2609,9 @@
               break;
             case 71:
               this.mapper = new Mapper71(cart, this);
-
+              break;
+            case 75:
+              this.mapper = new Mapper75(cart, this);
               break;
             case 79:
               this.mapper = new Mapper79(cart, this);
@@ -2776,10 +2846,8 @@
           let lastPc = this.cpu.PC;
 
           while (!this.ppu.consumeFrameFlag()) {
-           
             const used = this.cpu.step(); // CPU.step は消費サイクル数を返す想定
 
-           
             const ppuSteps =
               typeof used === "number" && used > 0
                 ? used * 3
@@ -2840,12 +2908,11 @@
       startBtn.addEventListener("click", () => {
         try {
           nes = new NES();
-         
-            nes.loadCartridge(romBytes);
-            nes.stepFrame();
-            nes.stepFrame();
-            loop();
-         
+
+          nes.loadCartridge(romBytes);
+          nes.stepFrame();
+          nes.stepFrame();
+          loop();
 
           status.textContent = "Running (skeleton)";
         } catch (e) {
