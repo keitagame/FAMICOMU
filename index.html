@@ -2776,12 +2776,10 @@
           let lastPc = this.cpu.PC;
 
           while (!this.ppu.consumeFrameFlag()) {
-            // 1. CPU を 1 命令だけ実行
+           
             const used = this.cpu.step(); // CPU.step は消費サイクル数を返す想定
 
-            // 2. PC が変わっていない連続回数をカウント（無限ループ検出）
-
-            // 3. PPU を CPU サイクル × 3（実機比）だけ進める
+           
             const ppuSteps =
               typeof used === "number" && used > 0
                 ? used * 3
