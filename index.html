@@ -155,7 +155,7 @@
         cpuRead(addr) {
           if (addr < 0x8000) return 0;
           let a = addr - 0x8000;
-          if (this.prgSize === 0x4000) a %= 0x4000; // 16KBミラー
+          if (this.prgSize === 0x4000) a %= 0x4000; 
           return this.prg[a];
         }
 
