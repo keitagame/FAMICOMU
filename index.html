@@ -2842,14 +2842,12 @@
       startBtn.addEventListener("click", () => {
         try {
           nes = new NES();
-          showStartupMessage(nes.ppu);
-
-          setTimeout(() => {
+         
             nes.loadCartridge(romBytes);
             nes.stepFrame();
             nes.stepFrame();
             loop();
-          }, 5000);
+         
 
           status.textContent = "Running (skeleton)";
         } catch (e) {
