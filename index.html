@@ -2681,6 +2681,50 @@
           e.preventDefault();
         }
       });
+      const font8x8 = {
+        A: [
+          0b00111100, 0b01000010, 0b10000001, 0b11111111, 0b10000001,
+          0b10000001, 0b10000001, 0b00000000,
+        ],
+        " ": [0, 0, 0, 0, 0, 0, 0, 0], // 空白
+        "?": [
+          0b0111110, 0b1000001, 0b0000010, 0b0001100, 0b0001000, 0b0000000,
+          0b0001000, 0b0000000,
+        ],
+        // 他の文字も定義
+      };
+      PPU.prototype.drawChar = function (px, py, ch, color = 0xffffffff) {
+        const glyph = font8x8[ch] || font8x8["?"];
+        if (!glyph) return; // 念のため
+        for (let row = 0; row < 8; row++) {
+          const bits = glyph[row];
+          for (let col = 0; col < 8; col++) {
+            if ((bits >> (7 - col)) & 1) {
+              const dst = (py + row) * 256 + (px + col);
+              this.framebuffer[dst] = color;
+            }
+          }
+        }
+      };
+
+      PPU.prototype.drawText = function (px, py, text, color = 0xffffffff) {
+        for (let i = 0; i < text.length; i++) {
+          this.drawChar(px + i * 8, py, text[i], color);
+        }
+      };
+      function showStartupMessage(ppu) {
+        // 背景を黒で塗りつぶし
+        ppu.framebuffer.fill(0xff000000);
+         const imageData = ctx.createImageData(256, 240);
+        // メッセージを描画
+        ppu.drawText(40, 100, "NES EMULATOR", 0xffffff00);
+        ppu.drawText(40, 120, "PRESS START", 0xffffffff);
+        const buf = new Uint32Array(imageData.data.buffer);
+        buf.set(ppu.framebuffer);
+        ctx.putImageData(imageData, 0, 0);
+        // 画面に反映
+        ppu.renderFrame();
+      }
 
       class NES {
         constructor() {
@@ -2774,12 +2818,16 @@
       startBtn.addEventListener("click", () => {
         try {
           nes = new NES();
-          nes.loadCartridge(romBytes);
-          status.textContent = "Running (skeleton)";
+          showStartupMessage(nes.ppu);
 
-          nes.stepFrame();
-          nes.stepFrame();
-          loop();
+          setTimeout(() => {
+            nes.loadCartridge(romBytes);
+            nes.stepFrame();
+            nes.stepFrame();
+            loop();
+          }, 1000);
+
+          status.textContent = "Running (skeleton)";
         } catch (e) {
           console.error(e);
           status.textContent = "Error: " + e.message;
