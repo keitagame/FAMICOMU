@@ -1403,6 +1403,7 @@
           this.t = 0; // temp VRAM addr
           this.x = 0; // fine X (3 bits)
           this.w = 0;
+          this.prevA12 = 0;
           // Timing
           this.cycle = 0;
           this.scanline = 0;
@@ -1411,7 +1412,28 @@
           this.nmiOccurred = false;
           this.framebuffer = new Uint32Array(256 * 240);
         }
+       
+        // 簡易: 各ラインで該当スプライト数を数える
+        countSpritesOnScanline(ppu, line, spriteHeight) {
+          let count = 0;
+          for (let i = 0; i < 64; i++) {
+            const y = ppu.oam[i * 4 + 0];
+            const sprTop = y + 1;
+            if (line >= sprTop && line < sprTop + spriteHeight) count++;
+            if (count >= 9) return count;
+          }
+          return count;
+        }
         renderFrame() {
+          this.PPUSTATUS &= ~0x20;
+          for (let line = 0; line < 240; line++) {
+            const spriteHeight = this.PPUCTRL & 0x20 ? 16 : 8;
+            const cnt = countSpritesOnScanline(this, line, spriteHeight);
+            if (cnt >= 9) {
+              this.PPUSTATUS |= 0x20; // bit5 overflow
+              break;
+            }
+          }
           // 背景描画のみ
           for (let ty = 0; ty < 30; ty++) {
             // 30タイル縦
@@ -1584,7 +1606,7 @@
             if (this.scanline == 241) {
               this.PPUSTATUS |= 0x80; // VBlank開始
               this.nmiOccurred = true;
-              
+
               this.updateNMI();
             }
 
@@ -1607,6 +1629,16 @@
           this.frameReady = false;
           return f;
         }
+        trackA12(ppu, addr) {
+          const a12 = addr & 0x1000 ? 1 : 0;
+          if (ppu.prevA12 === 0 && a12 === 1) {
+            // 立ち上がり
+            if (ppu.bus.mapper && ppu.bus.mapper.onA12Rise) {
+              ppu.bus.mapper.onA12Rise();
+            }
+          }
+          ppu.prevA12 = a12;
+        }
         renderBackground() {
           const showBg = (this.PPUMASK & 0x08) !== 0;
           const bgPatternBase = this.PPUCTRL & 0x10 ? 0x1000 : 0x0000;
@@ -1618,7 +1650,10 @@
           const coarseY = (v & 0x03e0) >> 5;
           const fineY = (v & 0x7000) >> 12;
           const nametable = v & 0x0c00;
+          this.bgNonZero = new Uint8Array(256 * 240);
 
+          // renderBackground 冒頭
+          this.bgNonZero.fill(0);
           if (!showBg) {
             // 背景無効なら塗りつぶし
             this.framebuffer.fill(
@@ -1649,13 +1684,23 @@
               const tileBase = bgPatternBase + tileIndex * 16;
               const lo = this.ppuRead(tileBase + tileRow);
               const hi = this.ppuRead(tileBase + tileRow + 8);
+              const loAddr = tileBase + tileRow;
+              const hiAddr = tileBase + tileRow + 8;
+             this.trackA12(this, loAddr);
+
+              this.trackA12(this, hiAddr);
               const bit = 7 - tileCol;
               const c0 = (lo >> bit) & 1;
               const c1 = (hi >> bit) & 1;
               const colorIndex = (c1 << 1) | c0;
+              this.bgNonZero[py * 256 + px] = colorIndex !== 0 ? 1 : 0;
               const palIndex =
                 this.ppuRead(0x3f00 + (palSel << 2) + colorIndex) & 0x3f;
-
+              const hideLeftBg = (this.PPUMASK & 0x02) === 0;
+              if (hideLeftBg && px < 8) {
+                // 左端が無効なら背景は色0扱いにする
+                this.bgNonZero[py * 256 + px] = 0;
+              }
               const rgba = this.getPaletteRGBA(palIndex);
               this.framebuffer[py * 256 + px] = rgba;
             }
@@ -1667,6 +1712,7 @@
           const showSprites = (this.PPUMASK & 0x10) !== 0;
           if (!showSprites) return;
 
+          const hideLeftSpr = (this.PPUMASK & 0x04) === 0;
           const spriteHeight = this.PPUCTRL & 0x20 ? 16 : 8;
           const spritePatternBase = this.PPUCTRL & 0x08 ? 0x1000 : 0x0000;
 
@@ -1714,7 +1760,14 @@
 
                 const sprX = x + col;
                 if (sprX < 0 || sprX >= 256) continue;
+                const bgNZ = this.bgNonZero[sprY * 256 + sprX] === 1;
+                const priorityBehind = (attr & 0x20) !== 0;
+                if (i === 0 && bgNZ) {
+                  this.PPUSTATUS |= 0x40; // bit6
+                }
 
+                // 背景優先なら背景非ゼロのときは描かない
+                if (priorityBehind && bgNZ) continue;
                 // スプライトパレットは $3F10〜（ミラーは ppuRead 内で処理される）
                 const palIndex =
                   this.ppuRead(0x3f10 + (palSel << 2) + colorIndex) & 0x3f;
@@ -1931,7 +1984,6 @@
 
         // One CPU step = execute one opcode (variable internal cycles)
         step() {
-          
           // Handle pending interrupts (edge from PPU)
           if (this.bus.takeNMI()) this.nmi();
           else if (this.bus.takeIRQ()) this.irq();
@@ -2033,6 +2085,7 @@
               return this.addr_zpy();
             },
             ABS: function () {
+              this.cycles += 1; // store は1サイクル追加
               return this.addr_abs();
             },
             ABX: function () {
@@ -2085,7 +2138,10 @@
           const BR = (cond) => {
             const off = this.rel();
             this.cycles += 1;
-            if (cond) {this.PC = (this.PC + off) & 0xffff;this.cycles += 1;}
+            if (cond) {
+              this.PC = (this.PC + off) & 0xffff;
+              this.cycles += 1;
+            }
           };
 
           // 単発ユーティリティ
@@ -2387,7 +2443,6 @@
           t[0x30] = function () {
             this.cycles += 2;
             BR((this.P & 0x80) !== 0);
-
           }; // BMI
           t[0x50] = function () {
             this.cycles += 2;
@@ -2698,7 +2753,8 @@
           }
           if (addr === 0x4014) {
             const base = val << 8;
-             this.cpu.cycles += 513;
+            this.cpu.cycles += this.cpu.cycles & 1 ? 514 : 513;
+
             for (let i = 0; i < 256; i++)
               this.ppu.oam[i] = this.cpuRead(base + i);
             return;
@@ -2891,8 +2947,7 @@
           while (!this.ppu.consumeFrameFlag()) {
             const used = this.cpu.step(); // CPU.step は消費サイクル数を返す想定
 
-            
-            for (let i = 0; i < used*3; i++) this.ppu.step();
+            for (let i = 0; i < used * 3; i++) this.ppu.step();
 
             if (++guard > 10_000_000)
               throw new Error("Frame step guard overflow");
@@ -2950,9 +3005,9 @@
           nes = new NES();
 
           nes.loadCartridge(romBytes);
-          
+
           nes.stepFrame();
-          
+
           loop();
 
           status.textContent = "Running (skeleton)";
