@@ -1226,7 +1226,7 @@
           if (addr < 0x6000) return 0;
           if (addr < 0x8000) return this.prgRAM[addr - 0x6000];
 
-          // 32KB バンク切り替え
+          
           const base = (this.prgBank % this.prgBanks) * 0x8000;
           return this.prg[base + (addr - 0x8000)];
         }
