@@ -109,7 +109,7 @@
         mirroring() {
           return this.mirrorMode;
         }
-        // セーブ対応（必要なら外から取得/保存）
+        
         getSaveRAM() {
           return this.prgRAM;
         }
@@ -1381,7 +1381,7 @@
         }
       }
 
-      // ---------- PPU (skeleton: VRAM, OAM, regs, timing, NMI) ----------
+    
       class PPU {
         constructor(bus) {
           this.bus = bus;
