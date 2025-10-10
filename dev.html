@@ -5,7 +5,6 @@
     <title>NES Emulator by keita</title>
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <style>
-      
       :root {
         color-scheme: light dark;
       }
@@ -101,12 +100,12 @@
           return 0;
         }
         cpuWrite(addr, val) {}
-        // PPU側
+       
         ppuRead(addr) {
           return 0;
         }
         ppuWrite(addr, val) {}
-        // ミラーリング
+        
         mirroring() {
           return this.mirrorMode;
         }
