@@ -161,7 +161,7 @@
           this.prg = cart.prg;
           this.chr = cart.chr || new Uint8Array(0x2000);
           this.chrIsRAM = cart.chrIsRAM;
-          this.bank = 0; // switchable at $8000-$BFFF
+          this.bank = 0; 
           this.fixedBank = this.prg.length / 0x4000 - 1; // last bank at $C000-$FFFF
         }
         cpuRead(addr) {
