@@ -5,3 +5,8 @@ This is a Famicom emulator created using client-side HTML JavaScript.<br>
 # How to use
 It's basically the same as any other NES emulator.<br>
 基本的には他の NES エミュレーターと同じです。
+# ScreenShot
+![famicomu](https://keitagame.github.io/FAMICOMU/scr.png)
+# Community
+Frank
+[frank](https://keitagames.com)
