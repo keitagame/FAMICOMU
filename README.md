@@ -8,5 +8,5 @@ It's basically the same as any other NES emulator.<br>
 # ScreenShot
 ![famicomu](https://keitagame.github.io/FAMICOMU/scr.png)
 # Community
-Frank
-[frank](https://keitagames.com)
+Frank<br>
+[frankdevcommunity](https://keitagames.com)
