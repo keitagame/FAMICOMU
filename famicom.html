@@ -1454,24 +1454,32 @@ class BackgroundUnit {
     const { scanline, cycle } = timing;
 
     const isRenderLine = scanline < 240 || scanline === 261;
-    if (!isRenderLine) return;
-
-    // レンダリングが有効かチェック
-    const renderingEnabled = (reg.PPUMASK & 0x18) !== 0;
-    
-
-    if (!renderingEnabled) return;
-
-    // Visible + prefetch cycles
-    const isFetchCycle = (cycle >= 1 && cycle <= 256) || (cycle >= 321 && cycle <= 336);
-   if (cycle >= 1 && cycle <= 256) {
+if (cycle >= 1 && cycle <= 256) {
       this.patternLo <<= 1;
       this.patternHi <<= 1;
       this.attrLo <<= 1;
       this.attrHi <<= 1;
     }
+    if (!isRenderLine) return;
+const isVisibleLine = scanline < 240;
+const isPreRenderLine = scanline === 261;
 
-    if (isFetchCycle) {
+    // レンダリングが有効かチェック
+    const renderingEnabled = (reg.PPUMASK & 0x18) !== 0;
+    
+   //if (!renderingEnabled) return;
+
+    // Visible + prefetch cycles
+    const isFetchCycle = (cycle >= 1 && cycle <= 256) || (cycle >= 321 && cycle <= 336);
+   
+if (renderingEnabled && (isVisibleLine || isPreRenderLine)) {
+    // visible + prefetch
+    if (
+      (scanline < 240 || scanline === 261) &&
+      ((cycle >= 1 && cycle <= 256) || (cycle >= 321 && cycle <= 336))
+    ) {
+      // fetch処理
+if (isFetchCycle) {
 
       // タイル境界でフェッチ・ロード
       const cycleMod8 = cycle % 8;
@@ -1496,6 +1504,9 @@ class BackgroundUnit {
        
       }
     }
+    }
+  }
+    
 
     // シフトレジスタを左シフト (描画サイクル中)
     // cycle 1 で描画が始まるので、cycle 2-257 の間にシフト
