@@ -1467,6 +1467,7 @@ class BackgroundUnit {
     const cycleMod8 = cycle % 8;
     
     switch (cycleMod8) {
+      
       case 1: // Nametable fetch
         this.fetchNametable();
         break;
@@ -1491,10 +1492,12 @@ class BackgroundUnit {
 
     // シフトレジスタを左シフト (描画サイクル中のみ)
    if (scanline < 240 && cycle >= 1 && cycle <= 256) {
-  this.patternLo <<= 1;
-  this.patternHi <<= 1;
-  this.attrLo <<= 1;
-  this.attrHi <<= 1;
+  
+this.patternLo <<= 1;
+this.patternHi <<= 1;
+this.attrLo <<= 1;
+this.attrHi <<= 1;
+
 }
 
     // Copy horizontal bits at cycle 257
@@ -1955,7 +1958,8 @@ class PPU {
 
   step() {
     const { scanline, cycle } = this.timing;
-
+    this.bg.step();
+    this.sprite.step(scanline, cycle);
     // Visible pixel rendering
     if (this.timing.isVisiblePixel()) {
       const x = cycle - 1;
@@ -1987,8 +1991,7 @@ class PPU {
       this.framebuffer[scanline * 256 + x] = NES_PALETTE[paletteColor & 0x3F];
     }
 
-    this.bg.step();
-    this.sprite.step(scanline, cycle);
+    
     this.timing.step(this.reg, this.bus);
   }
 }
