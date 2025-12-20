@@ -1459,17 +1459,20 @@ class BackgroundUnit {
     // レンダリングが有効かチェック
     const renderingEnabled = (reg.PPUMASK & 0x18) !== 0;
     
-if (cycle >= 1 && cycle <= 256) {
+
+    if (!renderingEnabled) return;
+
+    // Visible + prefetch cycles
+    const isFetchCycle = (cycle >= 1 && cycle <= 256) || (cycle >= 321 && cycle <= 336);
+   if (cycle >= 1 && cycle <= 256) {
       this.patternLo <<= 1;
       this.patternHi <<= 1;
       this.attrLo <<= 1;
       this.attrHi <<= 1;
     }
-    if (!renderingEnabled) return;
-    // Visible + prefetch cycles
-    const isFetchCycle = (cycle >= 1 && cycle <= 256) || (cycle >= 321 && cycle <= 336);
-    
+
     if (isFetchCycle) {
+
       // タイル境界でフェッチ・ロード
       const cycleMod8 = cycle % 8;
       
@@ -1486,13 +1489,11 @@ if (cycle >= 1 && cycle <= 256) {
         case 7: // Pattern high fetch
           this.fetchPatternHigh();
           break;
-        case 0: // Reload shift registers
+          case 0: // Reload shift registers
           this.reloadShiftRegisters();
-          // Coarse X インクリメント (cycle 8, 16, ..., 256 および 328, 336)
-          if ((cycle >= 8 && cycle <= 256) || cycle === 328 || cycle === 336) {
-            this.incrementX();
-          }
+          this.incrementX();
           break;
+       
       }
     }
 
@@ -1628,9 +1629,10 @@ this.attrHi = (this.attrHi & 0xFF00) | attrHiByte;
     }
 const fineX = this.ppu.reg.x;
 
-  const bit = 15 - fineX;
-
-  const lo = (this.patternLo >> bit) & 1;
+  //const bit = 15 + fineX;
+// 描画は常に MSB
+const bit = 15-fineX;
+ const lo = (this.patternLo >> bit) & 1;
   const hi = (this.patternHi >> bit) & 1;
   const attrLo = (this.attrLo >> bit) & 1;
   const attrHi = (this.attrHi >> bit) & 1;
@@ -1985,7 +1987,7 @@ maskPixel(screenX, screenY) {
     if (this.timing.isVisiblePixel()) {
        const x = cycle - 1;
       const bg = this.bg.pixel(x,scanline);
-      const spr = this.sprite.pixel(x);
+      const spr = this.sprite.pixel(x,scanline);
       let colorIndex = 0; // Default: universal background color
       
       // レンダリング無効時は背景色のみ
@@ -2999,7 +3001,14 @@ class Bus {
         }
 
         ctx.putImageData(imageData, 0, 0);
+         const border = 8;
 
+  // 外枠いっぱいに塗る場合（中を塗りつぶす）
+  ctx.fillStyle = 'black';
+  ctx.fillRect(0, 0, canvas.width, border);                     // 上
+  ctx.fillRect(0, canvas.height - border, canvas.width, border); // 下
+  ctx.fillRect(0, 0, border, canvas.height);                     // 左
+  ctx.fillRect(canvas.width - border, 0, border, canvas.height); // 右
         // Stats
         frames++;
         const now = performance.now();
