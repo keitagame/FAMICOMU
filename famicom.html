@@ -1454,7 +1454,9 @@ class BackgroundUnit {
     const { scanline, cycle } = timing;
 
     // Visible scanline + pre-render line
-    const isRenderLine = scanline < 240 || scanline === 261;
+    const isRenderLine = scanline < 240;
+
+    
     const isRenderCycle = cycle >= 1 && cycle <= 256;
     const isPrefetchCycle = cycle >= 321 && cycle <= 336;
 
@@ -1483,14 +1485,14 @@ class BackgroundUnit {
       case 0: // Reload shift registers
         this.reloadShiftRegisters();
         // Coarse X インクリメント
-        if (cycle !== 0 && cycle <= 256) {
+        if (cycle <= 256 && (scanline < 240 || scanline === 261))  {
           this.incrementX();
         }
         break;
     }
 
     // シフトレジスタを左シフト (描画サイクル中のみ)
-    if (cycle >= 2 && cycle <= 257) {
+    if (cycle >= 2 && cycle <= 256) {
       this.patternLo <<= 1;
       this.patternHi <<= 1;
       this.attrLo <<= 1;
@@ -1503,9 +1505,11 @@ class BackgroundUnit {
     }
 
     // Increment Y at cycle 256
-    if (cycle === 256) {
-      this.incrementY();
-    }
+    // Increment Y at cycle 256 (visible scanlines only)
+if (cycle === 256 && scanline < 240) {
+  this.incrementY();
+}
+
 
     // Copy vertical bits (pre-render line only)
     if (scanline === 261 && cycle >= 280 && cycle <= 304) {
