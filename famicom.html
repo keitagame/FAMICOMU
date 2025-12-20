@@ -1405,17 +1405,22 @@ border:1px solid rgb(255, 255, 255);
         }
       }
 
-    class PPURegisters {
+
+class PPURegisters {
   constructor() {
     this.PPUCTRL = 0;
     this.PPUMASK = 0;
     this.PPUSTATUS = 0xa0;
     this.OAMADDR = 0;
 
-    this.v = 0;
-    this.t = 0;
-    this.x = 0;
-    this.w = 0;
+    // スクロール関連レジスタ
+    this.v = 0;      // 現在のVRAMアドレス (15ビット)
+    this.t = 0;      // 一時VRAMアドレス (15ビット)
+    this.x = 0;      // Fine X スクロール (3ビット)
+    this.w = 0;      // 書き込みトグル (0 or 1)
+    
+    // PPUDATAバッファ
+    this.readBuffer = 0;
   }
 
   setSprite0Hit() {
@@ -1427,142 +1432,375 @@ border:1px solid rgb(255, 255, 255);
     else this.PPUSTATUS &= ~0x80;
   }
 }
+
 class BackgroundUnit {
   constructor(ppu) {
     this.ppu = ppu;
-    this.shiftLo = 0;
-    this.shiftHi = 0;
+
+    // シフトレジスタ (16ビット幅)
+    this.patternLo = 0;
+    this.patternHi = 0;
     this.attrLo = 0;
     this.attrHi = 0;
+
+    // 次のタイルデータ (ラッチ)
+    this.nextTileIndex = 0;
+    this.nextTileAttr = 0;
+    this.nextTileLo = 0;
+    this.nextTileHi = 0;
   }
 
   step() {
-    this.shiftLo <<= 1;
-    this.shiftHi <<= 1;
+    const { timing, reg } = this.ppu;
+    const { scanline, cycle } = timing;
+
+    // Visible scanline + pre-render line
+    const isRenderLine = scanline < 240 || scanline === 261;
+    const isRenderCycle = cycle >= 1 && cycle <= 256;
+    const isPrefetchCycle = cycle >= 321 && cycle <= 336;
+
+    if (!isRenderLine) return;
+    if (!isRenderCycle && !isPrefetchCycle) return;
+
+    // レンダリング無効時はスキップ
+    if ((reg.PPUMASK & 0x18) === 0) return;
+
+    // シフトレジスタを左シフト (毎サイクル)
+    if (isRenderCycle || isPrefetchCycle) {
+      this.patternLo <<= 1;
+      this.patternHi <<= 1;
+      this.attrLo <<= 1;
+      this.attrHi <<= 1;
+    }
+
+    // タイル境界でフェッチ・ロード
+    const cycleMod8 = cycle % 8;
+    
+    switch (cycleMod8) {
+      case 1: // Nametable fetch
+        this.fetchNametable();
+        break;
+      case 3: // Attribute fetch
+        this.fetchAttribute();
+        break;
+      case 5: // Pattern low fetch
+        this.fetchPatternLow();
+        break;
+      case 7: // Pattern high fetch
+        this.fetchPatternHigh();
+        break;
+      case 0: // Reload shift registers
+        this.reloadShiftRegisters();
+        break;
+    }
+
+    // Coarse X インクリメント (cycle 8, 16, 24, ..., 256)
+    if (cycleMod8 === 0 && cycle <= 256) {
+      this.incrementX();
+    }
+
+    // Copy horizontal bits at cycle 257
+    if (cycle === 257) {
+      this.copyX();
+    }
+
+    // Increment Y at cycle 256
+    if (cycle === 256) {
+      this.incrementY();
+    }
+
+    // Copy vertical bits (pre-render line only)
+    if (scanline === 261 && cycle >= 280 && cycle <= 304) {
+      this.copyY();
+    }
+  }
+
+  fetchNametable() {
+    const v = this.ppu.reg.v;
+    const ntAddr = 0x2000 | (v & 0x0FFF);
+    this.nextTileIndex = this.ppu.ppuRead(ntAddr);
+  }
+
+  fetchAttribute() {
+    const v = this.ppu.reg.v;
+    const coarseX = v & 0x1F;
+    const coarseY = (v >> 5) & 0x1F;
+    
+    const attrAddr = 0x23C0 | (v & 0x0C00) | ((coarseY >> 2) << 3) | (coarseX >> 2);
+    const attr = this.ppu.ppuRead(attrAddr);
+    
+    // 2x2タイルブロック内の位置で2ビット選択
+    const shift = ((coarseY & 2) << 1) | (coarseX & 2);
+    this.nextTileAttr = (attr >> shift) & 0x03;
+  }
+
+  fetchPatternLow() {
+    const { reg } = this.ppu;
+    const fineY = (reg.v >> 12) & 0x7;
+    const base = (reg.PPUCTRL & 0x10 ? 0x1000 : 0x0000);
+    const addr = base + this.nextTileIndex * 16 + fineY;
+    this.nextTileLo = this.ppu.ppuRead(addr);
+  }
+
+  fetchPatternHigh() {
+    const { reg } = this.ppu;
+    const fineY = (reg.v >> 12) & 0x7;
+    const base = (reg.PPUCTRL & 0x10 ? 0x1000 : 0x0000);
+    const addr = base + this.nextTileIndex * 16 + fineY + 8;
+    this.nextTileHi = this.ppu.ppuRead(addr);
+  }
+
+  reloadShiftRegisters() {
+    // 下位8ビットに新しいタイルデータをロード
+    this.patternLo = (this.patternLo & 0xFF00) | this.nextTileLo;
+    this.patternHi = (this.patternHi & 0xFF00) | this.nextTileHi;
+    
+    // 属性ビットを8ピクセル分展開
+    this.attrLo = (this.attrLo & 0xFF00) | ((this.nextTileAttr & 1) ? 0xFF : 0x00);
+    this.attrHi = (this.attrHi & 0xFF00) | ((this.nextTileAttr & 2) ? 0xFF : 0x00);
+  }
+
+  incrementX() {
+    const reg = this.ppu.reg;
+    if ((reg.PPUMASK & 0x18) === 0) return;
+    
+    // Coarse X をインクリメント
+    if ((reg.v & 0x001F) === 31) {
+      reg.v &= ~0x001F;          // Coarse X = 0
+      reg.v ^= 0x0400;            // Nametable 水平切り替え
+    } else {
+      reg.v++;
+    }
+  }
+
+  incrementY() {
+    const reg = this.ppu.reg;
+    if ((reg.PPUMASK & 0x18) === 0) return;
+    
+    // Fine Y をインクリメント
+    if ((reg.v & 0x7000) !== 0x7000) {
+      reg.v += 0x1000;
+    } else {
+      reg.v &= ~0x7000;           // Fine Y = 0
+      let y = (reg.v & 0x03E0) >> 5;
+      
+      if (y === 29) {
+        y = 0;
+        reg.v ^= 0x0800;          // Nametable 垂直切り替え
+      } else if (y === 31) {
+        y = 0;
+      } else {
+        y++;
+      }
+      reg.v = (reg.v & ~0x03E0) | (y << 5);
+    }
+  }
+
+  copyX() {
+    const reg = this.ppu.reg;
+    if ((reg.PPUMASK & 0x18) === 0) return;
+    
+    // t の水平ビットを v にコピー
+    reg.v = (reg.v & 0xFBE0) | (reg.t & 0x041F);
+  }
+
+  copyY() {
+    const reg = this.ppu.reg;
+    if ((reg.PPUMASK & 0x18) === 0) return;
+    
+    // t の垂直ビットを v にコピー
+    reg.v = (reg.v & 0x841F) | (reg.t & 0x7BE0);
   }
 
   pixel() {
     const bit = 15 - this.ppu.reg.x;
-    const lo = (this.shiftLo >> bit) & 1;
-    const hi = (this.shiftHi >> bit) & 1;
-    const ci = (hi << 1) | lo;
+    const lo = (this.patternLo >> bit) & 1;
+    const hi = (this.patternHi >> bit) & 1;
+    const attrLo = (this.attrLo >> bit) & 1;
+    const attrHi = (this.attrHi >> bit) & 1;
 
+    const paletteIndex = (hi << 1) | lo;
+    const paletteGroup = (attrHi << 1) | attrLo;
+    
+    // 背景パレット: 0x00 (universal bg), 0x01-0x03, 0x05-0x07, ...
+    const colorIndex = paletteIndex === 0 ? 0 : (paletteGroup * 4 + paletteIndex);
+    
     return {
-      color: ci,
-      nonZero: ci !== 0
+      color: colorIndex,
+      nonZero: paletteIndex !== 0
     };
   }
 }
+
 class SpriteUnit {
   constructor(ppu) {
     this.ppu = ppu;
     this.secondaryOAM = [];
+    this.sprites = []; // 描画用スプライトデータ
   }
 
   step(scanline, cycle) {
-    if (cycle === 0 && scanline < 240) {
+    // Sprite evaluation (cycle 0-64: clear, 65-256: evaluation)
+    if (cycle === 1 && scanline < 240) {
       this.evaluate(scanline);
+    }
+    
+    // Sprite fetch (cycle 257-320)
+    if (cycle === 257 && scanline < 240) {
+      this.fetchSprites(scanline);
     }
   }
 
   evaluate(scanline) {
     this.secondaryOAM = [];
+    const spriteHeight = (this.ppu.reg.PPUCTRL & 0x20) ? 16 : 8;
+    
     for (let i = 0; i < 64; i++) {
       const y = this.ppu.oam[i * 4];
-      const spriteHeight = (this.ppu.reg.PPUCTRL & 0x20) ? 16 : 8;
-      if (scanline >= y + 1 && scanline < y + 1 + spriteHeight) {
-        this.secondaryOAM.push(i);
-        if (this.secondaryOAM.length > 8) {
-          this.ppu.reg.PPUSTATUS |= 0x20;
+      
+      if (scanline >= y && scanline < y + spriteHeight) {
+        this.secondaryOAM.push({
+          index: i,
+          y: y,
+          tile: this.ppu.oam[i * 4 + 1],
+          attr: this.ppu.oam[i * 4 + 2],
+          x: this.ppu.oam[i * 4 + 3]
+        });
+        
+        if (this.secondaryOAM.length >= 8) {
+          this.ppu.reg.PPUSTATUS |= 0x20; // Sprite overflow
           break;
         }
       }
     }
   }
 
-  pixel(y, x) {
-    for (const i of this.secondaryOAM) {
-      // pixel fetch（省略）
+  fetchSprites(scanline) {
+    this.sprites = [];
+    const spriteHeight = (this.ppu.reg.PPUCTRL & 0x20) ? 16 : 8;
+    
+    for (const spr of this.secondaryOAM) {
+      let row = scanline - spr.y;
+      
+      // 垂直反転
+      if (spr.attr & 0x80) {
+        row = spriteHeight - 1 - row;
+      }
+      
+      let patternAddr;
+      if (spriteHeight === 8) {
+        // 8x8 スプライト
+        const base = (this.ppu.reg.PPUCTRL & 0x08) ? 0x1000 : 0x0000;
+        patternAddr = base + spr.tile * 16 + row;
+      } else {
+        // 8x16 スプライト
+        const bank = (spr.tile & 1) ? 0x1000 : 0x0000;
+        const tile = spr.tile & 0xFE;
+        const subtile = row >= 8 ? 1 : 0;
+        patternAddr = bank + (tile + subtile) * 16 + (row & 7);
+      }
+      
+      const lo = this.ppu.ppuRead(patternAddr);
+      const hi = this.ppu.ppuRead(patternAddr + 8);
+      
+      this.sprites.push({
+        index: spr.index,
+        x: spr.x,
+        attr: spr.attr,
+        patternLo: lo,
+        patternHi: hi
+      });
     }
+  }
+
+  pixel(x) {
+    for (const spr of this.sprites) {
+      const offset = x - spr.x;
+      if (offset < 0 || offset >= 8) continue;
+      
+      // 水平反転
+      const bit = (spr.attr & 0x40) ? offset : (7 - offset);
+      const lo = (spr.patternLo >> bit) & 1;
+      const hi = (spr.patternHi >> bit) & 1;
+      const paletteIndex = (hi << 1) | lo;
+      
+      if (paletteIndex === 0) continue; // 透明
+      
+      const paletteGroup = (spr.attr & 0x03) + 4; // スプライトパレット 4-7
+      const colorIndex = paletteGroup * 4 + paletteIndex;
+      
+      return {
+        visible: true,
+        color: colorIndex,
+        behind: (spr.attr & 0x20) !== 0,
+        index: spr.index
+      };
+    }
+    
     return { visible: false };
   }
 }
+
 class PPUTiming {
   constructor() {
-    this.cycle = 0;      // 0 - 340
-    this.scanline = 0;  // 0 - 261
+    this.cycle = 0;
+    this.scanline = 0;
     this.frame = 0;
     this.frameReady = false;
   }
 
-  /**
-   * 1 PPU cycle 進める
-   * @param {PPURegisters} reg
-   * @param {Bus} bus
-   */
   step(reg, bus) {
     this.cycle++;
 
-    // --- scanline end ---
+    // Scanline end
     if (this.cycle > 340) {
       this.cycle = 0;
       this.scanline++;
 
-      // --- VBlank start ---
+      // VBlank start
       if (this.scanline === 241) {
         reg.setVBlank(true);
-
-        // NMI enable?
         if (reg.PPUCTRL & 0x80) {
           bus.requestNMI();
         }
       }
 
-      // --- Pre-render line ---
+      // Pre-render line
       if (this.scanline === 261) {
-        // clear VBlank + sprite flags
         reg.setVBlank(false);
         reg.PPUSTATUS &= ~0x40; // sprite0 hit
         reg.PPUSTATUS &= ~0x20; // sprite overflow
       }
 
-      // --- frame end ---
+      // Frame end
       if (this.scanline > 261) {
         this.scanline = 0;
         this.frame++;
-        this.frameReady = true; 
+        this.frameReady = true;
       }
     }
   }
 
-  /**
-   * 今が描画ピクセルか？
-   */
   isVisiblePixel() {
-    return this.scanline < 240 && this.cycle < 256;
+    return this.scanline < 240 && this.cycle >= 1 && this.cycle <= 256;
   }
 
-  /**
-   * 今が visible scanline か？
-   */
   isVisibleScanline() {
     return this.scanline < 240;
   }
 
-  /**
-   * 今が VBlank 中か？
-   */
   inVBlank() {
     return this.scanline >= 241 && this.scanline <= 260;
   }
-consumeFrameFlag() {
+
+  consumeFrameFlag() {
     const f = this.frameReady;
     this.frameReady = false;
     return f;
   }
 }
 
-   class PPU {
+class PPU {
   constructor(bus) {
     this.bus = bus;
     this.oam = new Uint8Array(256);
@@ -1570,58 +1808,113 @@ consumeFrameFlag() {
     this.timing = new PPUTiming();
     this.bg = new BackgroundUnit(this);
     this.sprite = new SpriteUnit(this);
-
+    this.vram = new Uint8Array(0x800);
+    this.pal = new Uint8Array(32);
     this.framebuffer = new Uint32Array(256 * 240);
   }
-consumeFrameFlag() {
+
+  consumeFrameFlag() {
     return this.timing.consumeFrameFlag();
   }
-cpuWrite(addr, value) {
+
+  cpuWrite(addr, value) {
     switch (addr & 0x7) {
-      case 0: // PPUCTRL
+      case 0: // PPUCTRL ($2000)
         this.reg.PPUCTRL = value;
+        // t の nametable ビット更新
+        this.reg.t = (this.reg.t & 0xF3FF) | ((value & 0x03) << 10);
         break;
-      case 1: // PPUMASK
+        
+      case 1: // PPUMASK ($2001)
         this.reg.PPUMASK = value;
         break;
-      case 3: // OAMADDR
+        
+      case 3: // OAMADDR ($2003)
         this.reg.OAMADDR = value;
         break;
-      case 4: // OAMDATA
+        
+      case 4: // OAMDATA ($2004)
         this.oam[this.reg.OAMADDR] = value;
-        this.reg.OAMADDR = (this.reg.OAMADDR + 1) & 0xff;
+        this.reg.OAMADDR = (this.reg.OAMADDR + 1) & 0xFF;
         break;
-      case 5: // PPUSCROLL
-        // 実装簡略化
+        
+      case 5: // PPUSCROLL ($2005)
+        if (this.reg.w === 0) {
+          // 1回目: X スクロール
+          this.reg.t = (this.reg.t & 0xFFE0) | (value >> 3);
+          this.reg.x = value & 0x07;
+          this.reg.w = 1;
+        } else {
+          // 2回目: Y スクロール
+          this.reg.t = (this.reg.t & 0x8C1F) | ((value & 0xF8) << 2) | ((value & 0x07) << 12);
+          this.reg.w = 0;
+        }
         break;
-      case 6: // PPUADDR
-        // 実装簡略化
+        
+      case 6: // PPUADDR ($2006)
+        if (this.reg.w === 0) {
+          // 1回目: 上位バイト
+          this.reg.t = (this.reg.t & 0x00FF) | ((value & 0x3F) << 8);
+          this.reg.w = 1;
+        } else {
+          // 2回目: 下位バイト
+          this.reg.t = (this.reg.t & 0xFF00) | value;
+          this.reg.v = this.reg.t;
+          this.reg.w = 0;
+        }
         break;
-      case 7: // PPUDATA
-        // VRAM 書き込みはバス経由
+        
+      case 7: // PPUDATA ($2007)
+        this.ppuWrite(this.reg.v, value);
+        const inc = (this.reg.PPUCTRL & 0x04) ? 32 : 1;
+        this.reg.v = (this.reg.v + inc) & 0x7FFF;
         break;
     }
   }
 
   cpuRead(addr) {
     switch (addr & 0x7) {
-      case 2: return this.reg.PPUSTATUS;
-      case 4: return this.oam[this.reg.OAMADDR];
-      case 7:
-        // VRAM 読み出し
-        return 0;
+      case 2: { // PPUSTATUS ($2002)
+        const status = this.reg.PPUSTATUS;
+        this.reg.PPUSTATUS &= 0x7F; // VBlank フラグクリア
+        this.reg.w = 0;              // 書き込みトグルリセット
+        return status;
+      }
+      case 4: // OAMDATA ($2004)
+        return this.oam[this.reg.OAMADDR];
+        
+      case 7: { // PPUDATA ($2007)
+        let data = this.ppuRead(this.reg.v);
+        
+        // パレットRAM以外はバッファリング
+        if ((this.reg.v & 0x3FFF) < 0x3F00) {
+          const buffered = this.reg.readBuffer;
+          this.reg.readBuffer = data;
+          data = buffered;
+        } else {
+          // パレットは即座に読み出し (下位のVRAMはバッファに)
+          this.reg.readBuffer = this.ppuRead(this.reg.v - 0x1000);
+        }
+        
+        const inc = (this.reg.PPUCTRL & 0x04) ? 32 : 1;
+        this.reg.v = (this.reg.v + inc) & 0x7FFF;
+        return data;
+      }
     }
     return 0;
   }
-ppuRead(addr) {
-    addr &= 0x3fff;
+
+  ppuRead(addr) {
+    addr &= 0x3FFF;
+    
     if (addr < 0x2000) {
       return this.bus.cartCHRRead(addr);
-    } else if (addr < 0x3f00) {
+    } else if (addr < 0x3F00) {
       const nt = this.bus.ntMirror(addr);
       return this.vram[nt];
     } else if (addr < 0x4000) {
-      let i = addr & 0x1f;
+      let i = addr & 0x1F;
+      // パレットミラーリング ($10/$14/$18/$1C -> $00/$04/$08/$0C)
       if ((i & 0x13) === 0x10) i &= ~0x10;
       return this.pal[i];
     }
@@ -1629,37 +1922,48 @@ ppuRead(addr) {
   }
 
   ppuWrite(addr, val) {
-    addr &= 0x3fff;
-    val &= 0xff;
+    addr &= 0x3FFF;
+    val &= 0xFF;
+    
     if (addr < 0x2000) {
       this.bus.cartCHRWrite(addr, val);
-    } else if (addr < 0x3f00) {
+    } else if (addr < 0x3F00) {
       const nt = this.bus.ntMirror(addr);
       this.vram[nt] = val;
     } else if (addr < 0x4000) {
-      let i = addr & 0x1f;
+      let i = addr & 0x1F;
       if ((i & 0x13) === 0x10) i &= ~0x10;
       this.pal[i] = val;
     }
   }
+
   step() {
     const { scanline, cycle } = this.timing;
 
-    // Visible pixel
-    if (scanline < 240 && cycle < 256) {
+    // Visible pixel rendering
+    if (this.timing.isVisiblePixel()) {
+      const x = cycle - 1;
       const bg = this.bg.pixel();
-      const spr = this.sprite.pixel(scanline, cycle);
+      const spr = this.sprite.pixel(x);
 
-      let color = bg.color;
-      if (spr.visible && (!bg.nonZero || !spr.behind)) {
-        color = spr.color;
-        if (spr.index === 0 && bg.nonZero) {
+      let colorIndex = 0; // Default: universal background color
+      
+      // 優先順位: スプライト(前) > 背景 > スプライト(後) > 背景色
+      if (spr.visible && !spr.behind && spr.color !== 0) {
+        colorIndex = spr.color;
+        // Sprite 0 hit 判定
+        if (spr.index === 0 && bg.nonZero && x !== 255) {
           this.reg.setSprite0Hit();
         }
+      } else if (bg.nonZero) {
+        colorIndex = bg.color;
+      } else if (spr.visible) {
+        colorIndex = spr.color;
       }
 
-      this.framebuffer[scanline * 256 + cycle] =
-        NES_PALETTE[color];
+      // パレットから実際の色を取得
+      const paletteColor = this.pal[colorIndex];
+      this.framebuffer[scanline * 256 + x] = NES_PALETTE[paletteColor & 0x3F];
     }
 
     this.bg.step();
@@ -1667,6 +1971,7 @@ ppuRead(addr) {
     this.timing.step(this.reg, this.bus);
   }
 }
+
 
       // ---------- CPU 6502 skeleton ----------
       class CPU {
