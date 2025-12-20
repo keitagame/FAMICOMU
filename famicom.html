@@ -1405,421 +1405,268 @@ border:1px solid rgb(255, 255, 255);
         }
       }
 
-    
-      class PPU {
-        constructor(bus) {
-          this.bus = bus;
-          // PPU memory
-          this.vram = new Uint8Array(0x800); // nametables (2KB)
-          this.oam = new Uint8Array(256); // OAM
-          this.pal = new Uint8Array(32); // palette RAM
-          // Registers
-          this.PPUCTRL = 0; // $2000
-          this.PPUMASK = 0; // $2001
-          this.PPUSTATUS = 0xa0; // $2002 (VBlank=bit7), low bits power-up garbage-ish
-          this.OAMADDR = 0; // $2003
-          this.scrollTemp = 0; // t
-          this.scrollV = 0; // v
-          this.writeToggle = 0; // w
-          this.ppuAddr = 0;
-          this.ppuDataBuffer = 0;
-          this.v = 0; // current VRAM addr (15 bits)
-          this.t = 0; // temp VRAM addr
-          this.x = 0; // fine X (3 bits)
-          this.w = 0;
-          this.prevA12 = 0;
-          // Timing
-          this.cycle = 0;
-          this.scanline = 0;
-          this.frame = 0;
-          this.frameReady = false;
-          this.nmiOccurred = false;
-          this.framebuffer = new Uint32Array(256 * 240);
-        }
-       
-        // 簡易: 各ラインで該当スプライト数を数える
-        countSpritesOnScanline(ppu, line, spriteHeight) {
-          let count = 0;
-          for (let i = 0; i < 64; i++) {
-            const y = ppu.oam[i * 4 + 0];
-            const sprTop = y + 1;
-            if (line >= sprTop && line < sprTop + spriteHeight) count++;
-            if (count >= 9) return count;
-          }
-          return count;
-        }
-        renderFrame() {
-          this.PPUSTATUS &= ~0x20;
-          for (let line = 0; line < 240; line++) {
-            const spriteHeight = this.PPUCTRL & 0x20 ? 16 : 8;
-            const cnt = countSpritesOnScanline(this, line, spriteHeight);
-            if (cnt >= 9) {
-              this.PPUSTATUS |= 0x20; // bit5 overflow
-              break;
-            }
-          }
-          // 背景描画のみ
-          for (let ty = 0; ty < 30; ty++) {
-            // 30タイル縦
-            for (let tx = 0; tx < 32; tx++) {
-              // 32タイル横
-              const ntAddr = 0x2000 + ty * 32 + tx;
-              const tileIndex = this.ppuRead(ntAddr);
-              const attrAddr = 0x23c0 + (ty >> 2) * 8 + (tx >> 2);
-              const attr = this.ppuRead(attrAddr);
-              const shift = ((ty & 2) << 1) | (tx & 2);
-              const paletteIndex = (attr >> shift) & 0x03;
+    class PPURegisters {
+  constructor() {
+    this.PPUCTRL = 0;
+    this.PPUMASK = 0;
+    this.PPUSTATUS = 0xa0;
+    this.OAMADDR = 0;
 
-              // パターンテーブル0 ($0000〜)
-              const bgPatternBase = this.PPUCTRL & 0x10 ? 0x1000 : 0x0000;
-              const tileBase = bgPatternBase + tileIndex * 16;
+    this.v = 0;
+    this.t = 0;
+    this.x = 0;
+    this.w = 0;
+  }
 
-              for (let row = 0; row < 8; row++) {
-                const lo = this.ppuRead(tileBase + row);
-                const hi = this.ppuRead(tileBase + row + 8);
-                for (let col = 0; col < 8; col++) {
-                  const bit = 7 - col;
-                  const colorIndex =
-                    ((lo >> bit) & 1) | (((hi >> bit) & 1) << 1);
-                  const finalIndex =
-                    this.ppuRead(0x3f00 + (paletteIndex << 2) + colorIndex) &
-                    0x3f;
-                  const px = tx * 8 + col;
-                  const py = ty * 8 + row;
-                  this.framebuffer[py * 256 + px] = NES_PALETTE[finalIndex];
-                }
-              }
-            }
-          }
-        }
-        reset() {
-          this.PPUCTRL = this.PPUMASK = 0;
-          this.PPUSTATUS &= 0x7f;
-          this.writeToggle = 0;
-          this.cycle = this.scanline = 0;
-          this.frameReady = false;
-          this.nmiOccurred = false;
-        }
-        getPaletteRGBA(idx) {
-          return NES_PALETTE[idx & 0x3f] || 0x000000ff;
-        }
-        // CPU reads/writes to PPU regs
-        cpuRead(addr) {
-          switch (addr & 7) {
-            case 2: {
-              const val = this.PPUSTATUS;
-              this.PPUSTATUS &= 0x7f;
-              this.writeToggle = 0;
-              this.w = 0; // 実装の主語を揃えるならこれも
-              return val;
-            }
-            case 4:
-              return this.oam[this.OAMADDR];
+  setSprite0Hit() {
+    this.PPUSTATUS |= 0x40;
+  }
 
-            case 7: {
-              // PPUDATA
-              const addr = this.v & 0x3fff;
-              const val = this.ppuRead(addr);
-              const ret = (addr & 0x3f00) === 0x3f00 ? val : this.ppuDataBuffer;
-              this.ppuDataBuffer = val;
-              // アドレスは v を使って進める
-              this.v = (this.v + this.vramIncrement()) & 0x3fff;
-              return ret;
-            }
+  setVBlank(on) {
+    if (on) this.PPUSTATUS |= 0x80;
+    else this.PPUSTATUS &= ~0x80;
+  }
+}
+class BackgroundUnit {
+  constructor(ppu) {
+    this.ppu = ppu;
+    this.shiftLo = 0;
+    this.shiftHi = 0;
+    this.attrLo = 0;
+    this.attrHi = 0;
+  }
 
-            default:
-              return 0;
-          }
-        }
+  step() {
+    this.shiftLo <<= 1;
+    this.shiftHi <<= 1;
+  }
 
-        cpuWrite(addr, value) {
-          const v = value & 0xff;
-          switch (addr & 7) {
-            case 0: // PPUCTRL
-              this.PPUCTRL = v;
-              this.t = (this.t & 0x73ff) | ((v & 0x03) << 10); // nametable bits -> t
-              this.updateNMI();
-              break;
-            case 1: // PPUMASK
-              this.PPUMASK = v;
-              break;
-            case 3: // OAMADDR
-              this.OAMADDR = v;
-              break;
-            case 4: // OAMDATA
-              this.oam[this.OAMADDR] = v;
-              this.OAMADDR = (this.OAMADDR + 1) & 0xff;
-              break;
-            case 5: // PPUSCROLL
-              if (this.w === 0) {
-                this.x = v & 0x07; // fine X
-                this.t = (this.t & 0x7fe0) | (v >> 3); // coarse X
-                this.w = 1;
-              } else {
-                this.t =
-                  (this.t & 0x0c1f) | ((v & 0x07) << 12) | ((v & 0xf8) << 2); // fine Y + coarse Y
-                this.w = 0;
-              }
-              break;
-            case 6: // PPUADDR
-              if (this.w === 0) {
-                this.t = (this.t & 0x00ff) | ((v & 0x3f) << 8);
-                this.w = 1;
-              } else {
-                this.t = (this.t & 0x7f00) | v;
-                this.v = this.t;
-                this.w = 0;
-              }
-              break;
-            case 7: {
-              // PPUDATA
-              const a = this.v & 0x3fff;
-              this.ppuWrite(a, v);
-              this.v = (this.v + this.vramIncrement()) & 0x3fff;
-              break;
-            }
-          }
-        }
-        vramIncrement() {
-          return this.PPUCTRL & 0x04 ? 32 : 1;
-        }
-        updateNMI() {
-          if (this.PPUCTRL & 0x80 && this.nmiOccurred) {
-            this.bus.requestNMI();
-          }
-        }
+  pixel() {
+    const bit = 15 - this.ppu.reg.x;
+    const lo = (this.shiftLo >> bit) & 1;
+    const hi = (this.shiftHi >> bit) & 1;
+    const ci = (hi << 1) | lo;
 
-        ppuRead(addr) {
-          addr &= 0x3fff;
-          if (addr < 0x2000) {
-            return this.bus.cartCHRRead(addr);
-          } else if (addr < 0x3f00) {
-            const nt = this.bus.ntMirror(addr);
-            return this.vram[nt];
-          } else if (addr < 0x4000) {
-            let i = addr & 0x1f;
-            if ((i & 0x13) === 0x10) i &= ~0x10; // 0x10,14,18,1C → 0x00,04,08,0C
-            return this.pal[i];
-          }
+    return {
+      color: ci,
+      nonZero: ci !== 0
+    };
+  }
+}
+class SpriteUnit {
+  constructor(ppu) {
+    this.ppu = ppu;
+    this.secondaryOAM = [];
+  }
 
-          return 0;
-        }
+  step(scanline, cycle) {
+    if (cycle === 0 && scanline < 240) {
+      this.evaluate(scanline);
+    }
+  }
 
-        ppuWrite(addr, val) {
-          addr &= 0x3fff;
-          val &= 0xff;
-          if (addr < 0x2000) {
-            this.bus.cartCHRWrite(addr, val);
-          } else if (addr < 0x3f00) {
-            const nt = this.bus.ntMirror(addr);
-            this.vram[nt] = val;
-          } else if (addr < 0x4000) {
-            let i = addr & 0x1f;
-            if ((i & 0x13) === 0x10) i &= ~0x10;
-            this.pal[i] = val;
-          }
-        }
-
-        // Advance PPU by 1 cycle; set VBlank and frameReady appropriately
-        step() {
-          this.cycle++;
-          if (this.cycle > 340) {
-            this.cycle = 0;
-            this.scanline++;
-
-            if (this.scanline == 241) {
-              this.PPUSTATUS |= 0x80; // VBlank開始
-              this.nmiOccurred = true;
-
-              this.updateNMI();
-            }
-
-            if (this.scanline === 261) {
-              // pre-render line の先頭でクリア
-              this.PPUSTATUS &= 0x7f;
-              this.nmiOccurred = false;
-            }
-
-            if (this.scanline > 261) {
-              this.scanline = 0;
-              this.frame++;
-              this.frameReady = true;
-            }
-          }
-        }
-
-        consumeFrameFlag() {
-          const f = this.frameReady;
-          this.frameReady = false;
-          return f;
-        }
-        trackA12(ppu, addr) {
-          const a12 = addr & 0x1000 ? 1 : 0;
-          if (ppu.prevA12 === 0 && a12 === 1) {
-            // 立ち上がり
-            if (ppu.bus.mapper && ppu.bus.mapper.onA12Rise) {
-              ppu.bus.mapper.onA12Rise();
-            }
-          }
-          ppu.prevA12 = a12;
-        }
-        renderBackground() {
-          const showBg = (this.PPUMASK & 0x08) !== 0;
-          const bgPatternBase = this.PPUCTRL & 0x10 ? 0x1000 : 0x0000;
-
-          // vの内容からスクロールを抽出
-          let v = this.t;
-          const fineX = this.x & 0x07;
-          const coarseX = v & 0x001f;
-          const coarseY = (v & 0x03e0) >> 5;
-          const fineY = (v & 0x7000) >> 12;
-          const nametable = v & 0x0c00;
-          this.bgNonZero = new Uint8Array(256 * 240);
-
-          // renderBackground 冒頭
-          this.bgNonZero.fill(0);
-          if (!showBg) {
-            // 背景無効なら塗りつぶし
-            this.framebuffer.fill(
-              NES_PALETTE[this.pal[0] & 0x3f] || 0x000000ff
-            );
-            return;
-          }
-
-          for (let py = 0; py < 240; py++) {
-            const y = py + (coarseY * 8 + fineY);
-            const ntY = Math.floor(y / 8) & 0x1f;
-            const tileRow = y & 7;
-
-            for (let px = 0; px < 256; px++) {
-              const x = px + (coarseX * 8 + fineX);
-              const ntX = Math.floor(x / 8) & 0x1f;
-              const tileCol = x & 7;
-
-              // nametable ラップ（1画面内スクロール。別画面跨ぎは nametable ビット）
-              const ntAddr = 0x2000 + nametable + ntY * 32 + ntX;
-              const tileIndex = this.ppuRead(ntAddr);
-
-              const attrAddr = 0x23c0 + nametable + (ntY >> 2) * 8 + (ntX >> 2);
-              const attr = this.ppuRead(attrAddr);
-              const shift = ((ntY & 2) << 1) | (ntX & 2);
-              const palSel = (attr >> shift) & 0x03;
-
-              const tileBase = bgPatternBase + tileIndex * 16;
-              const lo = this.ppuRead(tileBase + tileRow);
-              const hi = this.ppuRead(tileBase + tileRow + 8);
-              const loAddr = tileBase + tileRow;
-              const hiAddr = tileBase + tileRow + 8;
-             this.trackA12(this, loAddr);
-
-              this.trackA12(this, hiAddr);
-              const bit = 7 - tileCol;
-              const c0 = (lo >> bit) & 1;
-              const c1 = (hi >> bit) & 1;
-              const colorIndex = (c1 << 1) | c0;
-              this.bgNonZero[py * 256 + px] = colorIndex !== 0 ? 1 : 0;
-              const palIndex =
-                this.ppuRead(0x3f00 + (palSel << 2) + colorIndex) & 0x3f;
-              const hideLeftBg = (this.PPUMASK & 0x02) === 0;
-              if (hideLeftBg && px < 8) {
-                // 左端が無効なら背景は色0扱いにする
-                this.bgNonZero[py * 256 + px] = 0;
-              }
-              const rgba = this.getPaletteRGBA(palIndex);
-              this.framebuffer[py * 256 + px] = rgba;
-            }
-          }
-        }
-
-        // スプライト描画
-        renderSprites() {
-          const showSprites = (this.PPUMASK & 0x10) !== 0;
-          if (!showSprites) return;
-
-          const hideLeftSpr = (this.PPUMASK & 0x04) === 0;
-          const spriteHeight = this.PPUCTRL & 0x20 ? 16 : 8;
-          const spritePatternBase = this.PPUCTRL & 0x08 ? 0x1000 : 0x0000;
-
-          // 背景の「非ゼロ色」チェックを簡略：framebufferが塗られている前提
-          // 厳密にはBGのパレット色インデックス0は透明扱いだが、まずは見た目優先
-          // 必要ならBG側で非ゼロ色マップを作る
-
-          for (let i = 0; i < 64; i++) {
-            const y = this.oam[i * 4 + 0];
-            const tile = this.oam[i * 4 + 1];
-            const attr = this.oam[i * 4 + 2];
-            const x = this.oam[i * 4 + 3];
-
-            const flipH = (attr & 0x40) !== 0;
-            const flipV = (attr & 0x80) !== 0;
-            const priorityBehind = (attr & 0x20) !== 0;
-            const palSel = attr & 0x03;
-
-            let patternTableBase = spritePatternBase;
-            let tileIndex = tile;
-
-            if (spriteHeight === 16) {
-              // 8x16: bit0 selects table, tileIndex ignores bit0
-              patternTableBase = tile & 1 ? 0x1000 : 0x0000;
-              tileIndex = tile & 0xfe;
-            }
-
-            for (let row = 0; row < spriteHeight; row++) {
-              const sprY = y + 1 + row; // OAMはY-1
-              if (sprY < 0 || sprY >= 240) continue;
-
-              const innerRow = flipV ? spriteHeight - 1 - row : row;
-              const bankRow = innerRow & 7;
-              const bankAdd = innerRow & 8 ? 16 : 0;
-              const base = patternTableBase + tileIndex * 16 + bankAdd;
-              const lo = this.ppuRead(base + bankRow);
-              const hi = this.ppuRead(base + bankRow + 8);
-
-              for (let col = 0; col < 8; col++) {
-                const srcBit = flipH ? col : 7 - col;
-                const c0 = (lo >> srcBit) & 1;
-                const c1 = (hi >> srcBit) & 1;
-                const colorIndex = (c1 << 1) | c0;
-                if (colorIndex === 0) continue; // 透明
-
-                const sprX = x + col;
-                if (sprX < 0 || sprX >= 256) continue;
-                const bgNZ = this.bgNonZero[sprY * 256 + sprX] === 1;
-                const priorityBehind = (attr & 0x20) !== 0;
-                if (i === 0 && bgNZ) {
-                  this.PPUSTATUS |= 0x40; // bit6
-                }
-
-                // 背景優先なら背景非ゼロのときは描かない
-                if (priorityBehind && bgNZ) continue;
-                // スプライトパレットは $3F10〜（ミラーは ppuRead 内で処理される）
-                const palIndex =
-                  this.ppuRead(0x3f10 + (palSel << 2) + colorIndex) & 0x3f;
-                const dst = sprY * 256 + sprX;
-
-                if (!priorityBehind) {
-                  this.framebuffer[dst] = this.getPaletteRGBA(palIndex);
-                } else {
-                  // 背景優先: 背景が透明（色インデックス0）なら描くべきだが、簡略実装ではスキップ
-                  // 必要なら背景の非ゼロインデックスマップを導入
-                }
-
-                // Sprite 0 hit: BG非ゼロと重なり、画面内、描画有効時のみ
-                if (i === 0) {
-                  // 簡略：背景を常に非ゼロとみなさず、最低限フレームバッファ色が書かれている前提でヒット
-                  // 厳密にはBG側で colorIndex!=0 を記録してここで参照
-                  this.PPUSTATUS |= 0x40;
-                }
-              }
-            }
-          }
-        }
-
-        renderFrame() {
-          this.renderBackground();
-          this.renderSprites();
+  evaluate(scanline) {
+    this.secondaryOAM = [];
+    for (let i = 0; i < 64; i++) {
+      const y = this.ppu.oam[i * 4];
+      const spriteHeight = (this.ppu.reg.PPUCTRL & 0x20) ? 16 : 8;
+      if (scanline >= y + 1 && scanline < y + 1 + spriteHeight) {
+        this.secondaryOAM.push(i);
+        if (this.secondaryOAM.length > 8) {
+          this.ppu.reg.PPUSTATUS |= 0x20;
+          break;
         }
       }
+    }
+  }
+
+  pixel(y, x) {
+    for (const i of this.secondaryOAM) {
+      // pixel fetch（省略）
+    }
+    return { visible: false };
+  }
+}
+class PPUTiming {
+  constructor() {
+    this.cycle = 0;      // 0 - 340
+    this.scanline = 0;  // 0 - 261
+    this.frame = 0;
+    this.frameReady = false;
+  }
+
+  /**
+   * 1 PPU cycle 進める
+   * @param {PPURegisters} reg
+   * @param {Bus} bus
+   */
+  step(reg, bus) {
+    this.cycle++;
+
+    // --- scanline end ---
+    if (this.cycle > 340) {
+      this.cycle = 0;
+      this.scanline++;
+
+      // --- VBlank start ---
+      if (this.scanline === 241) {
+        reg.setVBlank(true);
+
+        // NMI enable?
+        if (reg.PPUCTRL & 0x80) {
+          bus.requestNMI();
+        }
+      }
+
+      // --- Pre-render line ---
+      if (this.scanline === 261) {
+        // clear VBlank + sprite flags
+        reg.setVBlank(false);
+        reg.PPUSTATUS &= ~0x40; // sprite0 hit
+        reg.PPUSTATUS &= ~0x20; // sprite overflow
+      }
+
+      // --- frame end ---
+      if (this.scanline > 261) {
+        this.scanline = 0;
+        this.frame++;
+        this.frameReady = true; 
+      }
+    }
+  }
+
+  /**
+   * 今が描画ピクセルか？
+   */
+  isVisiblePixel() {
+    return this.scanline < 240 && this.cycle < 256;
+  }
+
+  /**
+   * 今が visible scanline か？
+   */
+  isVisibleScanline() {
+    return this.scanline < 240;
+  }
+
+  /**
+   * 今が VBlank 中か？
+   */
+  inVBlank() {
+    return this.scanline >= 241 && this.scanline <= 260;
+  }
+consumeFrameFlag() {
+    const f = this.frameReady;
+    this.frameReady = false;
+    return f;
+  }
+}
+
+   class PPU {
+  constructor(bus) {
+    this.bus = bus;
+    this.oam = new Uint8Array(256);
+    this.reg = new PPURegisters();
+    this.timing = new PPUTiming();
+    this.bg = new BackgroundUnit(this);
+    this.sprite = new SpriteUnit(this);
+
+    this.framebuffer = new Uint32Array(256 * 240);
+  }
+consumeFrameFlag() {
+    return this.timing.consumeFrameFlag();
+  }
+cpuWrite(addr, value) {
+    switch (addr & 0x7) {
+      case 0: // PPUCTRL
+        this.reg.PPUCTRL = value;
+        break;
+      case 1: // PPUMASK
+        this.reg.PPUMASK = value;
+        break;
+      case 3: // OAMADDR
+        this.reg.OAMADDR = value;
+        break;
+      case 4: // OAMDATA
+        this.oam[this.reg.OAMADDR] = value;
+        this.reg.OAMADDR = (this.reg.OAMADDR + 1) & 0xff;
+        break;
+      case 5: // PPUSCROLL
+        // 実装簡略化
+        break;
+      case 6: // PPUADDR
+        // 実装簡略化
+        break;
+      case 7: // PPUDATA
+        // VRAM 書き込みはバス経由
+        break;
+    }
+  }
+
+  cpuRead(addr) {
+    switch (addr & 0x7) {
+      case 2: return this.reg.PPUSTATUS;
+      case 4: return this.oam[this.reg.OAMADDR];
+      case 7:
+        // VRAM 読み出し
+        return 0;
+    }
+    return 0;
+  }
+ppuRead(addr) {
+    addr &= 0x3fff;
+    if (addr < 0x2000) {
+      return this.bus.cartCHRRead(addr);
+    } else if (addr < 0x3f00) {
+      const nt = this.bus.ntMirror(addr);
+      return this.vram[nt];
+    } else if (addr < 0x4000) {
+      let i = addr & 0x1f;
+      if ((i & 0x13) === 0x10) i &= ~0x10;
+      return this.pal[i];
+    }
+    return 0;
+  }
+
+  ppuWrite(addr, val) {
+    addr &= 0x3fff;
+    val &= 0xff;
+    if (addr < 0x2000) {
+      this.bus.cartCHRWrite(addr, val);
+    } else if (addr < 0x3f00) {
+      const nt = this.bus.ntMirror(addr);
+      this.vram[nt] = val;
+    } else if (addr < 0x4000) {
+      let i = addr & 0x1f;
+      if ((i & 0x13) === 0x10) i &= ~0x10;
+      this.pal[i] = val;
+    }
+  }
+  step() {
+    const { scanline, cycle } = this.timing;
+
+    // Visible pixel
+    if (scanline < 240 && cycle < 256) {
+      const bg = this.bg.pixel();
+      const spr = this.sprite.pixel(scanline, cycle);
+
+      let color = bg.color;
+      if (spr.visible && (!bg.nonZero || !spr.behind)) {
+        color = spr.color;
+        if (spr.index === 0 && bg.nonZero) {
+          this.reg.setSprite0Hit();
+        }
+      }
+
+      this.framebuffer[scanline * 256 + cycle] =
+        NES_PALETTE[color];
+    }
+
+    this.bg.step();
+    this.sprite.step(scanline, cycle);
+    this.timing.step(this.reg, this.bus);
+  }
+}
 
       // ---------- CPU 6502 skeleton ----------
       class CPU {
@@ -1836,6 +1683,23 @@ border:1px solid rgb(255, 255, 255);
           this.pendingNMI = false;
           this.pendingIRQ = false;
           this.opcodes = this.buildOpcodeTable();
+          this.cycTable = new Array(
+    /*0x00*/ 7,6,2,8,3,3,5,5,3,2,2,2,4,4,6,6,
+    /*0x10*/ 2,5,2,8,4,4,6,6,2,4,2,7,4,4,7,7,
+    /*0x20*/ 6,6,2,8,3,3,5,5,4,2,2,2,4,4,6,6,
+    /*0x30*/ 2,5,2,8,4,4,6,6,2,4,2,7,4,4,7,7,
+    /*0x40*/ 6,6,2,8,3,3,5,5,3,2,2,2,3,4,6,6,
+    /*0x50*/ 2,5,2,8,4,4,6,6,2,4,2,7,4,4,7,7,
+    /*0x60*/ 6,6,2,8,3,3,5,5,4,2,2,2,5,4,6,6,
+    /*0x70*/ 2,5,2,8,4,4,6,6,2,4,2,7,4,4,7,7,
+    /*0x80*/ 2,6,2,6,3,3,3,3,2,2,2,2,4,4,4,4,
+    /*0x90*/ 2,6,2,6,4,4,4,4,2,5,2,5,5,5,5,5,
+    /*0xA0*/ 2,6,2,6,3,3,3,3,2,2,2,2,4,4,4,4,
+    /*0xB0*/ 2,5,2,5,4,4,4,4,2,4,2,4,4,4,4,4,
+    /*0xC0*/ 2,6,2,8,3,3,5,5,2,2,2,2,4,4,6,6,
+    /*0xD0*/ 2,5,2,8,4,4,6,6,2,4,2,7,4,4,7,7,
+    /*0xE0*/ 2,6,3,8,3,3,5,5,2,2,2,2,4,4,6,6,
+    /*0xF0*/ 2,5,2,8,4,4,6,6,2,4,2,7,4,4,7,7);
         }
         reset() {
           if (!this.bus.mapper) {
@@ -2023,7 +1887,7 @@ border:1px solid rgb(255, 255, 255);
           }
           const before = this.cycles;
           entry.call(this);
-          return this.cycles - before;
+          return this.cycTable[op];
         }
 
         // Minimal opcode table (pattern). Add here to progress coverage.
@@ -2978,28 +2842,32 @@ border:1px solid rgb(255, 255, 255);
           this.bus.insertCartridge(cart);
           console.log("Bus.mapper =", this.bus.mapper);
           this.cpu.reset();
-          this.ppu.reset();
+          //this.ppu.reset();
         }
         // === NES.stepFrame の安全化（step を二回呼んでいる箇所を修正、PC 繰り返し検出を追加） ===
         stepFrame() {
-          // PPU runs faster than CPU. Use CPU.step() return value to advance PPU.
-          let guard = 0;
-          // PC が同じ値でループしているか検出するための簡易カウンタ
-          let samePcCount = 0;
-          let lastPc = this.cpu.PC;
+  let guard = 0;
 
-          while (!this.ppu.consumeFrameFlag()) {
-            const used = this.cpu.step(); // CPU.step は消費サイクル数を返す想定
+  while (!this.ppu.consumeFrameFlag()) {
+    const cpuCycles = this.cpu.step(); // CPU が消費したサイクル数
 
-            for (let i = 0; i < used * 3; i++) this.ppu.step();
+    // NES: CPU 1 cycle = PPU 3 cycles
+    for (let i = 0; i < cpuCycles * 3; i++) {
+      this.ppu.step();
+    }
 
-            if (++guard > 10_000_000)
-              throw new Error("Frame step guard overflow");
-          }
+    if (++guard > 10_000_000) {
+      throw new Error("Frame step guard overflow");
+    }
+  }
 
-          console.log("frame loop count", guard);
-          this.ppu.renderFrame();
-        }
+  // フレーム消費
+  this.ppu.frameReady = false;
+
+  // ここでは「描画しない」
+  // framebuffer はすでに完成している
+}
+
       }
       // ---------- UI / Main loop ----------
       const canvas = document.getElementById("screen");
@@ -3109,12 +2977,7 @@ border:1px solid rgb(255, 255, 255);
           lastFpsTime = now;
         }
 
-        ramEl.textContent = "0x" + nes.cpu.S.toString(16).padStart(4, "0");
-        mapperEl.textContent = "0x" + nes.cpu.P.toString(16).padStart(4, "0");
-        ppuEl.textContent = "0x" + nes.ppu.v.toString(16).padStart(4, "0");
-        ppXEl.textContent = "0x" + nes.ppu.t.toString(16).padStart(4, "0");
-        pcEl.textContent = "0x" + nes.cpu.PC.toString(16).padStart(4, "0");
-        cycEl.textContent = nes.cpu.cycles.toString();
+        
         console.log("CHR banks:", nes.bus.mapper.chrBankMap);
         console.log(
           "PPU $0000..$0010:",
