@@ -25,7 +25,7 @@
         height: 100%;              /* コンテナ幅に合わせる */
       aspect-ratio: 256 / 240;  /* 内部解像度の比率を維持 */
         image-rendering: pixelated;
-        border: 1px solid #000000;
+        border: 1px solid #ffffff;
         background: #000;
       }
       .row {
@@ -1458,8 +1458,14 @@ class BackgroundUnit {
 
     // レンダリングが有効かチェック
     const renderingEnabled = (reg.PPUMASK & 0x18) !== 0;
+    
+if (cycle >= 1 && cycle <= 256) {
+      this.patternLo <<= 1;
+      this.patternHi <<= 1;
+      this.attrLo <<= 1;
+      this.attrHi <<= 1;
+    }
     if (!renderingEnabled) return;
-
     // Visible + prefetch cycles
     const isFetchCycle = (cycle >= 1 && cycle <= 256) || (cycle >= 321 && cycle <= 336);
     
@@ -1492,12 +1498,7 @@ class BackgroundUnit {
 
     // シフトレジスタを左シフト (描画サイクル中)
     // cycle 1 で描画が始まるので、cycle 2-257 の間にシフト
-    if (cycle >= 2 && cycle <= 257) {
-      this.patternLo <<= 1;
-      this.patternHi <<= 1;
-      this.attrLo <<= 1;
-      this.attrHi <<= 1;
-    }
+    
 
     // Copy horizontal bits at cycle 257
     if (cycle === 257) {
@@ -1615,7 +1616,16 @@ this.attrHi = (this.attrHi & 0xFF00) | attrHiByte;
     reg.v = (reg.v & 0x841F) | (reg.t & 0x7BE0);
   }
 
-  pixel() {
+
+  pixel(x,scanline) {
+    if (x < 8 || x >= 248) {
+      return { color: 0, nonZero: false };
+    }
+    
+    // 上端8px、下端8pxのマスク
+    if (scanline < 8 || scanline >= 232) {
+      return { color: 0, nonZero: false };
+    }
 const fineX = this.ppu.reg.x;
 
   const bit = 15 - fineX;
@@ -1831,6 +1841,21 @@ class PPU {
   consumeFrameFlag() {
     return this.timing.consumeFrameFlag();
   }
+// screenX, screenY は現在描画中の座標
+maskPixel(screenX, screenY) {
+  const mask = this.ppu.reg.PPUMASK;
+
+  // 左端8pxマスク（背景）
+  if ((mask & 0x02) === 0 && screenX < 8) return true;
+
+  // 上下8px（実装都合で常にマスク）
+  if (screenY < 8 || screenY >= 232) return true;
+
+  // 右端8px（任意：実機では描画されるが多くのエミュで隠す）
+  if (screenX >= 248) return true;
+
+  return false;
+}
 
   cpuWrite(addr, value) {
     switch (addr & 0x7) {
@@ -1958,10 +1983,9 @@ class PPU {
     this.sprite.step(scanline, cycle);
     // Visible pixel rendering
     if (this.timing.isVisiblePixel()) {
-      const x = cycle - 1;
-      const bg = this.bg.pixel();
+       const x = cycle - 1;
+      const bg = this.bg.pixel(x,scanline);
       const spr = this.sprite.pixel(x);
-
       let colorIndex = 0; // Default: universal background color
       
       // レンダリング無効時は背景色のみ
