@@ -1462,7 +1462,14 @@ class BackgroundUnit {
 
     if (!isRenderLine) return;
     
-    
+     if (scanline < 240 && cycle >= 1 && cycle <= 256) {
+  
+this.patternLo <<= 1;
+this.patternHi <<= 1;
+this.attrLo <<= 1;
+this.attrHi <<= 1;
+
+}
     // タイル境界でフェッチ・ロード
     const cycleMod8 = cycle % 8;
     
@@ -1491,14 +1498,7 @@ class BackgroundUnit {
     }
 
     // シフトレジスタを左シフト (描画サイクル中のみ)
-   if (scanline < 240 && cycle >= 1 && cycle <= 256) {
   
-this.patternLo <<= 1;
-this.patternHi <<= 1;
-this.attrLo <<= 1;
-this.attrHi <<= 1;
-
-}
 
     // Copy horizontal bits at cycle 257
    // copyX は pre-render でも必要
@@ -1558,17 +1558,22 @@ if (cycle === 256) {
 
   reloadShiftRegisters() {
  // 下位8ビットにロード
-    this.patternLo = (this.patternLo & 0xFF00) | this.nextTileLo;
-    this.patternHi = (this.patternHi & 0xFF00) | this.nextTileHi;
-    
+    //this.patternLo = (this.patternLo & 0xFF00) | this.nextTileLo;
+    //this.patternHi = (this.patternHi & 0xFF00) | this.nextTileHi;
+    this.patternLo = (this.patternLo & 0x00FF) | (this.nextTileLo << 8);
+    this.patternHi = (this.patternHi & 0x00FF) | (this.nextTileHi << 8);
+
     // 属性は1ビットを0x00または0xFFに拡張してロード
     // これによりシフト時に常に現在のタイルのパレット情報を維持できる
     const attrLoByte = (this.nextTileAttr & 1) ? 0xFF : 0x00;
     const attrHiByte = (this.nextTileAttr & 2) ? 0xFF : 0x00;
     
-    this.attrLo = (this.attrLo & 0xFF00) | attrLoByte;
-    this.attrHi = (this.attrHi & 0xFF00) | attrHiByte;   
-}
+    //this.attrLo = (this.attrLo & 0xFF00) | attrLoByte;
+    //this.attrHi = (this.attrHi & 0xFF00) | attrHiByte; 
+this.attrLo = (this.attrLo & 0x00FF) | ((this.nextTileAttr & 1) ? 0xFF00 : 0x0000);
+  this.attrHi = (this.attrHi & 0x00FF) | ((this.nextTileAttr & 2) ? 0xFF00 : 0x0000);
+}  
+
 
   incrementX() {
     const reg = this.ppu.reg;
@@ -1623,11 +1628,11 @@ if (cycle === 256) {
   }
 
   pixel() {
-    const bit = 15 - this.ppu.reg.x;
-    const lo = (this.patternLo >> bit) & 1;
-    const hi = (this.patternHi >> bit) & 1;
-    const attrLo = (this.attrLo >> bit) & 1;
-    const attrHi = (this.attrHi >> bit) & 1;
+const lo = (this.patternLo >> 15) & 1;
+  const hi = (this.patternHi >> 15) & 1;
+  const attrLo = (this.attrLo >> 15) & 1;
+  const attrHi = (this.attrHi >> 15) & 1;
+   
 
     const paletteIndex = (hi << 1) | lo;
     const paletteGroup = (attrHi << 1) | attrLo;
