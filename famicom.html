@@ -1405,7 +1405,6 @@ border:1px solid rgb(255, 255, 255);
         }
       }
 
-
 class PPURegisters {
   constructor() {
     this.PPUCTRL = 0;
@@ -1465,14 +1464,6 @@ class BackgroundUnit {
     // レンダリング無効時はスキップ
     if ((reg.PPUMASK & 0x18) === 0) return;
 
-    // シフトレジスタを左シフト (毎サイクル)
-    if (isRenderCycle || isPrefetchCycle) {
-      this.patternLo <<= 1;
-      this.patternHi <<= 1;
-      this.attrLo <<= 1;
-      this.attrHi <<= 1;
-    }
-
     // タイル境界でフェッチ・ロード
     const cycleMod8 = cycle % 8;
     
@@ -1491,12 +1482,19 @@ class BackgroundUnit {
         break;
       case 0: // Reload shift registers
         this.reloadShiftRegisters();
+        // Coarse X インクリメント
+        if (cycle !== 0 && cycle <= 256) {
+          this.incrementX();
+        }
         break;
     }
 
-    // Coarse X インクリメント (cycle 8, 16, 24, ..., 256)
-    if (cycleMod8 === 0 && cycle <= 256) {
-      this.incrementX();
+    // シフトレジスタを左シフト (描画サイクル中のみ)
+    if (cycle >= 2 && cycle <= 257) {
+      this.patternLo <<= 1;
+      this.patternHi <<= 1;
+      this.attrLo <<= 1;
+      this.attrHi <<= 1;
     }
 
     // Copy horizontal bits at cycle 257
@@ -1537,7 +1535,7 @@ class BackgroundUnit {
   fetchPatternLow() {
     const { reg } = this.ppu;
     const fineY = (reg.v >> 12) & 0x7;
-    const base = (reg.PPUCTRL & 0x10 ? 0x1000 : 0x0000);
+    const base = (reg.PPUCTRL & 0x10) ? 0x1000 : 0x0000;
     const addr = base + this.nextTileIndex * 16 + fineY;
     this.nextTileLo = this.ppu.ppuRead(addr);
   }
@@ -1545,7 +1543,7 @@ class BackgroundUnit {
   fetchPatternHigh() {
     const { reg } = this.ppu;
     const fineY = (reg.v >> 12) & 0x7;
-    const base = (reg.PPUCTRL & 0x10 ? 0x1000 : 0x0000);
+    const base = (reg.PPUCTRL & 0x10) ? 0x1000 : 0x0000;
     const addr = base + this.nextTileIndex * 16 + fineY + 8;
     this.nextTileHi = this.ppu.ppuRead(addr);
   }
@@ -1658,6 +1656,7 @@ class SpriteUnit {
     for (let i = 0; i < 64; i++) {
       const y = this.ppu.oam[i * 4];
       
+      // Y座標は次のスキャンラインから有効
       if (scanline >= y && scanline < y + spriteHeight) {
         this.secondaryOAM.push({
           index: i,
@@ -1813,6 +1812,14 @@ class PPU {
     this.framebuffer = new Uint32Array(256 * 240);
   }
 
+  reset() {
+    // レジスタリセット時に v と t を同期
+    this.reg.v = 0;
+    this.reg.t = 0;
+    this.reg.x = 0;
+    this.reg.w = 0;
+  }
+
   consumeFrameFlag() {
     return this.timing.consumeFrameFlag();
   }
@@ -1948,17 +1955,22 @@ class PPU {
 
       let colorIndex = 0; // Default: universal background color
       
-      // 優先順位: スプライト(前) > 背景 > スプライト(後) > 背景色
-      if (spr.visible && !spr.behind && spr.color !== 0) {
-        colorIndex = spr.color;
-        // Sprite 0 hit 判定
-        if (spr.index === 0 && bg.nonZero && x !== 255) {
-          this.reg.setSprite0Hit();
+      // レンダリング無効時は背景色のみ
+      if ((this.reg.PPUMASK & 0x18) === 0) {
+        colorIndex = 0;
+      } else {
+        // 優先順位: スプライト(前) > 背景 > スプライト(後) > 背景色
+        if (spr.visible && !spr.behind) {
+          colorIndex = spr.color;
+          // Sprite 0 hit 判定
+          if (spr.index === 0 && bg.nonZero && x !== 255) {
+            this.reg.setSprite0Hit();
+          }
+        } else if (bg.nonZero) {
+          colorIndex = bg.color;
+        } else if (spr.visible) {
+          colorIndex = spr.color;
         }
-      } else if (bg.nonZero) {
-        colorIndex = bg.color;
-      } else if (spr.visible) {
-        colorIndex = spr.color;
       }
 
       // パレットから実際の色を取得
@@ -1973,904 +1985,617 @@ class PPU {
 }
 
 
-      // ---------- CPU 6502 skeleton ----------
-      class CPU {
-        constructor(bus) {
-          this.bus = bus;
-          // Registers
-          this.A = 0;
-          this.X = 0;
-          this.Y = 0;
-          this.S = 0xfd; // Stack pointer
-          this.P = 0x24; // NV-BDIZC (power-up: 0x24 typical)
-          this.PC = 0x0000;
-          this.cycles = 0;
-          this.pendingNMI = false;
-          this.pendingIRQ = false;
-          this.opcodes = this.buildOpcodeTable();
-          this.cycTable = new Array(
-    /*0x00*/ 7,6,2,8,3,3,5,5,3,2,2,2,4,4,6,6,
-    /*0x10*/ 2,5,2,8,4,4,6,6,2,4,2,7,4,4,7,7,
-    /*0x20*/ 6,6,2,8,3,3,5,5,4,2,2,2,4,4,6,6,
-    /*0x30*/ 2,5,2,8,4,4,6,6,2,4,2,7,4,4,7,7,
-    /*0x40*/ 6,6,2,8,3,3,5,5,3,2,2,2,3,4,6,6,
-    /*0x50*/ 2,5,2,8,4,4,6,6,2,4,2,7,4,4,7,7,
-    /*0x60*/ 6,6,2,8,3,3,5,5,4,2,2,2,5,4,6,6,
-    /*0x70*/ 2,5,2,8,4,4,6,6,2,4,2,7,4,4,7,7,
-    /*0x80*/ 2,6,2,6,3,3,3,3,2,2,2,2,4,4,4,4,
-    /*0x90*/ 2,6,2,6,4,4,4,4,2,5,2,5,5,5,5,5,
-    /*0xA0*/ 2,6,2,6,3,3,3,3,2,2,2,2,4,4,4,4,
-    /*0xB0*/ 2,5,2,5,4,4,4,4,2,4,2,4,4,4,4,4,
-    /*0xC0*/ 2,6,2,8,3,3,5,5,2,2,2,2,4,4,6,6,
-    /*0xD0*/ 2,5,2,8,4,4,6,6,2,4,2,7,4,4,7,7,
-    /*0xE0*/ 2,6,3,8,3,3,5,5,2,2,2,2,4,4,6,6,
-    /*0xF0*/ 2,5,2,8,4,4,6,6,2,4,2,7,4,4,7,7);
-        }
-        reset() {
-          if (!this.bus.mapper) {
-            throw new Error("Mapper not set before CPU.reset()");
-          }
-          this.A = this.X = this.Y = 0;
-          this.S = 0xfd;
-          this.P = 0x24;
-          this.PC = this.read16(0xfffc);
-          this.cycles = 0;
-          this.pendingNMI = false;
-          this.pendingIRQ = false;
-        }
 
-        // Flags
-        updateZN(v) {
-          this.P = (this.P & ~0x82) | ((v === 0 ? 0x02 : 0) | (v & 0x80));
-        }
-        setZ(v) {
-          this.P = (this.P & ~0x02) | (v === 0 ? 0x02 : 0);
-        }
-        setN(v) {
-          this.P = (this.P & ~0x80) | (v & 0x80);
-        }
-        get I() {
-          return (this.P >> 2) & 1;
-        }
-        setC(b) {
-          this.P = (this.P & ~0x01) | (b ? 1 : 0);
-        }
-        setV(b) {
-          this.P = (this.P & ~0x40) | (b ? 0x40 : 0);
-        }
-        setD(b) {
-          this.P = (this.P & ~0x08) | (b ? 0x08 : 0);
-        }
-        setI(b) {
-          this.P = (this.P & ~0x04) | (b ? 0x04 : 0);
-        }
+class CPU {
+  constructor(bus) {
+    this.bus = bus;
+    // Registers
+    this.A = 0;
+    this.X = 0;
+    this.Y = 0;
+    this.S = 0xfd; // Stack pointer
+    this.P = 0x24; // NV-BDIZC (power-up: 0x24 typical)
+    this.PC = 0x0000;
+    this.cycles = 0;
+    this.pendingNMI = false;
+    this.pendingIRQ = false;
+    this.opcodes = this.buildOpcodeTable();
+    this.cycTable = new Uint8Array([
+      /*0x00*/ 7,6,2,8,3,3,5,5,3,2,2,2,4,4,6,6,
+      /*0x10*/ 2,5,2,8,4,4,6,6,2,4,2,7,4,4,7,7,
+      /*0x20*/ 6,6,2,8,3,3,5,5,4,2,2,2,4,4,6,6,
+      /*0x30*/ 2,5,2,8,4,4,6,6,2,4,2,7,4,4,7,7,
+      /*0x40*/ 6,6,2,8,3,3,5,5,3,2,2,2,3,4,6,6,
+      /*0x50*/ 2,5,2,8,4,4,6,6,2,4,2,7,4,4,7,7,
+      /*0x60*/ 6,6,2,8,3,3,5,5,4,2,2,2,5,4,6,6,
+      /*0x70*/ 2,5,2,8,4,4,6,6,2,4,2,7,4,4,7,7,
+      /*0x80*/ 2,6,2,6,3,3,3,3,2,2,2,2,4,4,4,4,
+      /*0x90*/ 2,6,2,6,4,4,4,4,2,5,2,5,5,5,5,5,
+      /*0xA0*/ 2,6,2,6,3,3,3,3,2,2,2,2,4,4,4,4,
+      /*0xB0*/ 2,5,2,5,4,4,4,4,2,4,2,4,4,4,4,4,
+      /*0xC0*/ 2,6,2,8,3,3,5,5,2,2,2,2,4,4,6,6,
+      /*0xD0*/ 2,5,2,8,4,4,6,6,2,4,2,7,4,4,7,7,
+      /*0xE0*/ 2,6,3,8,3,3,5,5,2,2,2,2,4,4,6,6,
+      /*0xF0*/ 2,5,2,8,4,4,6,6,2,4,2,7,4,4,7,7
+    ]);
+  }
 
-        // Memory helpers
-        read(addr) {
-          return this.bus.cpuRead(addr);
-        }
-        write(addr, v) {
-          this.bus.cpuWrite(addr, v);
-        }
-        read16(addr) {
-          const lo = this.read(addr);
-          const hi = this.read((addr + 1) & 0xffff);
-          return (hi << 8) | lo;
-        }
-        read16bug(addr) {
-          const lo = this.read(addr);
-          const a2 = (addr & 0xff00) | ((addr + 1) & 0xff);
-          const hi = this.read(a2);
-          return (hi << 8) | lo;
-        }
+  reset() {
+    if (!this.bus.mapper) {
+      throw new Error("Mapper not set before CPU.reset()");
+    }
+    this.A = this.X = this.Y = 0;
+    this.S = 0xfd;
+    this.P = 0x24;
+    this.PC = this.read16(0xfffc);
+    this.cycles = 0;
+    this.pendingNMI = false;
+    this.pendingIRQ = false;
+  }
 
-        // Stack
-        push(v) {
-          this.write(0x0100 | this.S, v);
-          this.S = (this.S - 1) & 0xff;
-        }
-        pull() {
-          this.S = (this.S + 1) & 0xff;
-          return this.read(0x0100 | this.S);
-        }
+  // Flags
+  updateZN(v) {
+    this.P = (this.P & ~0x82) | ((v === 0 ? 0x02 : 0) | (v & 0x80));
+  }
+  setZ(v) {
+    this.P = (this.P & ~0x02) | (v === 0 ? 0x02 : 0);
+  }
+  setN(v) {
+    this.P = (this.P & ~0x80) | (v & 0x80);
+  }
+  get I() {
+    return (this.P >> 2) & 1;
+  }
+  setC(b) {
+    this.P = (this.P & ~0x01) | (b ? 1 : 0);
+  }
+  setV(b) {
+    this.P = (this.P & ~0x40) | (b ? 0x40 : 0);
+  }
+  setD(b) {
+    this.P = (this.P & ~0x08) | (b ? 0x08 : 0);
+  }
+  setI(b) {
+    this.P = (this.P & ~0x04) | (b ? 0x04 : 0);
+  }
 
-        // Interrupts
-        nmi() {
-          this.push(hi(this.PC));
-          this.push(lo(this.PC));
-          this.push(this.P & ~0x10);
-          this.setI(1);
-          this.PC = this.read16(0xfffa);
-          this.cycles += 7;
-        }
-        irq() {
-          if (!this.I) {
-            this.push(hi(this.PC));
-            this.push(lo(this.PC));
-            this.push(this.P & ~0x10);
-            this.setI(1);
-            this.PC = this.read16(0xfffe);
-            this.cycles += 7;
-          }
-        }
-        adc(m) {
-          const a = this.A,
-            c = this.P & 1;
-          const r = a + m + c;
-          this.setC(r > 0xff);
-          const res = r & 0xff;
-          // V = (~(A ^ M) & (A ^ R) & 0x80) != 0
-          this.setV((~(a ^ m) & (a ^ res) & 0x80) !== 0);
-          this.A = res;
-          this.updateZN(res);
-        }
-        // SBC = A + (~M) + C
-        sbc(m) {
-          const a = this.A,
-            c = this.P & 1;
-          const m2 = ~m & 0xff;
-          const r = a + m2 + c;
-          this.setC(r > 0xff);
-          const res = r & 0xff;
-          // V = (~(A ^ ~M) & (A ^ R) & 0x80) != 0  => same as (A ^ M)
-          this.setV((~(a ^ m) & (a ^ res) & 0x80) !== 0);
-          this.A = res;
-          this.updateZN(res);
-        }
-        compare(reg, m) {
-          const r = (reg - m) & 0xff;
-          this.setC(reg >= m);
-          this.updateZN(r);
-        }
-        // Addressing modes
-        fetch() {
-          const v = this.read(this.PC);
-          this.PC = (this.PC + 1) & 0xffff;
-          return v;
-        }
-        addr_imm() {
-          return this.PC++;
-        }
-        addr_zp() {
-          return this.fetch();
-        }
-        addr_zpx() {
-          return (this.fetch() + this.X) & 0xff;
-        }
-        addr_zpy() {
-          return (this.fetch() + this.Y) & 0xff;
-        }
-        addr_abs() {
-          const lo = this.fetch(),
-            hi_ = this.fetch();
-          return (hi_ << 8) | lo;
-        }
-        addr_abx() {
-          const base = this.addr_abs();
-          return (base + this.X) & 0xffff;
-        }
-        addr_aby() {
-          const base = this.addr_abs();
-          return (base + this.Y) & 0xffff;
-        }
-        addr_ind() {
-          const a = this.addr_abs();
-          return this.read16bug(a);
-        }
-        addr_izx() {
-          const zp = (this.fetch() + this.X) & 0xff;
-          const lo = this.read(zp),
-            hi_ = this.read((zp + 1) & 0xff);
-          return (hi_ << 8) | lo;
-        }
-        addr_izy() {
-          const zp = this.fetch();
-          const lo = this.read(zp),
-            hi_ = this.read((zp + 1) & 0xff);
-          return (((hi_ << 8) | lo) + this.Y) & 0xffff;
-        }
-        rel() {
-          let o = this.fetch();
-          if (o & 0x80) o = o - 0x100;
-          return o;
-        }
+  // Memory helpers
+  read(addr) {
+    return this.bus.cpuRead(addr);
+  }
+  write(addr, v) {
+    this.bus.cpuWrite(addr, v);
+  }
+  read16(addr) {
+    const lo = this.read(addr);
+    const hi = this.read((addr + 1) & 0xffff);
+    return (hi << 8) | lo;
+  }
+  read16bug(addr) {
+    const lo = this.read(addr);
+    const a2 = (addr & 0xff00) | ((addr + 1) & 0xff);
+    const hi = this.read(a2);
+    return (hi << 8) | lo;
+  }
 
-        // One CPU step = execute one opcode (variable internal cycles)
-        step() {
-          // Handle pending interrupts (edge from PPU)
-          if (this.bus.takeNMI()) this.nmi();
-          else if (this.bus.takeIRQ()) this.irq();
+  // Stack
+  push(v) {
+    this.write(0x0100 | this.S, v);
+    this.S = (this.S - 1) & 0xff;
+  }
+  pull() {
+    this.S = (this.S + 1) & 0xff;
+    return this.read(0x0100 | this.S);
+  }
 
-          const op = this.fetch();
-          const entry = this.opcodes[op];
-          if (!entry) {
-            throw new Error(
-              `Unimplemented opcode $${op
-                .toString(16)
-                .padStart(2, "0")} at PC=${this.PC.toString(16)}`
-            );
-          }
-          const before = this.cycles;
-          entry.call(this);
-          return this.cycTable[op];
-        }
+  // Interrupts
+  nmi() {
+    this.push((this.PC >> 8) & 0xff);
+    this.push(this.PC & 0xff);
+    this.push(this.P & ~0x10);
+    this.setI(1);
+    this.PC = this.read16(0xfffa);
+    this.cycles += 7;
+  }
+  irq() {
+    if (!this.I) {
+      this.push((this.PC >> 8) & 0xff);
+      this.push(this.PC & 0xff);
+      this.push(this.P & ~0x10);
+      this.setI(1);
+      this.PC = this.read16(0xfffe);
+      this.cycles += 7;
+    }
+  }
 
-        // Minimal opcode table (pattern). Add here to progress coverage.
-        buildOpcodeTable() {
-          const t = new Array(256);
+  adc(m) {
+    const a = this.A, c = this.P & 1;
+    const r = a + m + c;
+    this.setC(r > 0xff);
+    const res = r & 0xff;
+    this.setV((~(a ^ m) & (a ^ res) & 0x80) !== 0);
+    this.A = res;
+    this.updateZN(res);
+  }
 
-          // アドレッシング簡易ヘルパ
-          const R = {
-            IMM: function () {
-             this.cycles+=2;
-              return this.read(this.addr_imm());
-            },
-            ZP: function () {
-             this.cycles+=4;
-              return this.read(this.addr_zp());
-            },
-            ZPX: function () {
-             this.cycles+=4;
-              return this.read(this.addr_zpx());
-            },
-            ZPY: function () {
-              
-              return this.read(this.addr_zpy());
-            },
-            ABS: function () {
-                this.cycles+=4;
-              return this.read(this.addr_abs());
-            },
-            ABX: function () {
-               this.cycles+=4;
-              return this.read(this.addr_abx());
-            },
-            ABY: function () {
-               this.cycles+=4;
-              return this.read(this.addr_aby());
-            },
-            IZX: function () {
-                this.cycles+=6;
-              return this.read(this.addr_izx());
-            },
-            IZY: function () {
-                this.cycles+=5;
-              return this.read(this.addr_izy());
-            },
-            ACC: function () {
-              return this.A;
-            },
-          };
-          const W = {
-            ZP: function (fn) {
-                this.cycles+=5;
-              const a = this.addr_zp();
-              const v = fn(this.read(a));
-              this.write(a, v);
-            },
-            ZPX: function (fn) {
-                this.cycles+=4;
-              const a = this.addr_zpx();
-              const v = fn(this.read(a));
-              this.write(a, v);
-            },
-            ZPY: function (fn) {
-                this.cycles+=4;
-              const a = this.addr_zpy();
-              const v = fn(this.read(a));
-              this.write(a, v);
-            },
-            ABS: function (fn) {
-                this.cycles+=4;
-              const a = this.addr_abs();
-              const v = fn(this.read(a));
-              this.write(a, v);
-            },
-            ABX: function (fn) {
-                this.cycles+=7;
-              const a = this.addr_abx();
-              const v = fn(this.read(a));
-              this.write(a, v);
-            },
-            ABY: function (fn) {
-                this.cycles+=4;
-              const a = this.addr_aby();
-              const v = fn(this.read(a));
-              this.write(a, v);
-            },
-            ACC: function (fn) {
-              this.A = fn(this.A) & 0xff;
-            },
-          };
-          const S = {
-            ZP: function () {
-                this.cycles+=4;
-              return this.addr_zp();
-            },
-            ZPX: function () {
-                this.cycles+=4;
-              return this.addr_zpx();
-            },
-            ZPY: function () {
-                this.cycles+=4;
-              return this.addr_zpy();
-            },
-            ABS: function () {
-              this.cycles += 1; // store は1サイクル追加
-              return this.addr_abs();
-            },
-            ABX: function () {
-                this.cycles+=4;
-              return this.addr_abx();
-            },
-            ABY: function () {
-                this.cycles+=4;
-              return this.addr_aby();
-            },
-            IZX: function () {
-              return this.addr_izx();
-            },
-            IZY: function () {
-              return this.addr_izy();
-            },
-          };
+  sbc(m) {
+    const a = this.A, c = this.P & 1;
+    const m2 = ~m & 0xff;
+    const r = a + m2 + c;
+    this.setC(r > 0xff);
+    const res = r & 0xff;
+    this.setV((~(a ^ m2) & (a ^ res) & 0x80) !== 0);
+    this.A = res;
+    this.updateZN(res);
+  }
 
-          // RMW helpers
-          const ASL = (v) => {
-            const c = (v >> 7) & 1;
-            const r = (v << 1) & 0xff;
-            this.setC(c);
-            this.updateZN(r);
-            return r;
-          };
-          const LSR = (v) => {
-            const c = v & 1;
-            const r = (v >>> 1) & 0xff;
-            this.setC(c);
-            this.updateZN(r);
-            return r;
-          };
-          const ROL = (v) => {
-            const cIn = this.P & 1;
-            const cOut = (v >> 7) & 1;
-            const r = ((v << 1) & 0xff) | cIn;
-            this.setC(cOut);
-            this.updateZN(r);
-            return r;
-          };
-          const ROR = (v) => {
-            const cIn = this.P & 1;
-            const cOut = v & 1;
-            const r = ((v >>> 1) | (cIn << 7)) & 0xff;
-            this.setC(cOut);
-            this.updateZN(r);
-            return r;
-          };
+  compare(reg, m) {
+    const r = (reg - m) & 0x1ff;
+    this.setC(reg >= m);
+    this.updateZN(r & 0xff);
+  }
 
-          // 分岐
-          const BR = (cond) => {
-            const off = this.rel();
-            this.cycles += 1;
-            if (cond) {
-              this.PC = (this.PC + off) & 0xffff;
-              this.cycles += 1;
-            }
-          };
+  // Addressing modes
+  fetch() {
+    const v = this.read(this.PC);
+    this.PC = (this.PC + 1) & 0xffff;
+    return v;
+  }
+  
+  addr_imm() {
+    return this.PC++;
+  }
+  addr_zp() {
+    return this.fetch();
+  }
+  addr_zpx() {
+    return (this.fetch() + this.X) & 0xff;
+  }
+  addr_zpy() {
+    return (this.fetch() + this.Y) & 0xff;
+  }
+  addr_abs() {
+    const lo = this.fetch();
+    const hi = this.fetch();
+    return (hi << 8) | lo;
+  }
+  addr_abx(extraCycle = false) {
+    const lo = this.fetch();
+    const hi = this.fetch();
+    const base = (hi << 8) | lo;
+    const addr = (base + this.X) & 0xffff;
+    // ページクロス検出
+    if (extraCycle && (base & 0xff00) !== (addr & 0xff00)) {
+      this.cycles++;
+    }
+    return addr;
+  }
+  addr_aby(extraCycle = false) {
+    const lo = this.fetch();
+    const hi = this.fetch();
+    const base = (hi << 8) | lo;
+    const addr = (base + this.Y) & 0xffff;
+    // ページクロス検出
+    if (extraCycle && (base & 0xff00) !== (addr & 0xff00)) {
+      this.cycles++;
+    }
+    return addr;
+  }
+  addr_ind() {
+    const a = this.addr_abs();
+    return this.read16bug(a);
+  }
+  addr_izx() {
+    const zp = (this.fetch() + this.X) & 0xff;
+    const lo = this.read(zp);
+    const hi = this.read((zp + 1) & 0xff);
+    return (hi << 8) | lo;
+  }
+  addr_izy(extraCycle = false) {
+    const zp = this.fetch();
+    const lo = this.read(zp);
+    const hi = this.read((zp + 1) & 0xff);
+    const base = (hi << 8) | lo;
+    const addr = (base + this.Y) & 0xffff;
+    // ページクロス検出
+    if (extraCycle && (base & 0xff00) !== (addr & 0xff00)) {
+      this.cycles++;
+    }
+    return addr;
+  }
+  
+  rel() {
+    let o = this.fetch();
+    if (o & 0x80) o = o - 0x100;
+    return o;
+  }
 
-          // 単発ユーティリティ
-          const BIT = (m) => {
-            const v = m;
-            this.setZ((this.A & v) === 0 ? 0 : 1); // setZ expects numeric
-            // setZ wants 0 to set flag; emulate explicitly:
-            this.setZ((this.A & v) === 0 ? 0 : 1); // fix: we'll implement directly below
-          };
+  // One CPU step = execute one opcode
+  step() {
+    this.cycles = 0;
+    // Handle pending interrupts
+    if (this.bus.takeNMI()) this.nmi();
+    else if (this.bus.takeIRQ()) this.irq();
 
-          // 上の BIT は setZ 仕様と噛み合いが悪いので個別に処理
-          const BITexec = (m) => {
-            const v = m & 0xff;
-            // Z flag: A & v == 0
-            this.P = (this.P & ~0x02) | ((this.A & v) === 0 ? 0x02 : 0x00);
-            // V,N from operand bit 6,7
-            this.P = (this.P & ~0x40) | (v & 0x40);
-            this.P = (this.P & ~0x80) | (v & 0x80);
-          };
+    const op = this.fetch();
+    const entry = this.opcodes[op];
+    if (!entry) {
+      throw new Error(
+        `Unimplemented opcode $${op.toString(16).padStart(2, "0")} at PC=${(this.PC - 1).toString(16)}`
+      );
+    }
+    
+    const cycleBefore = this.cycles;
+    entry.call(this);
+    
+    // cycTable からベースサイクルを加算（命令内で追加サイクルが加算済み）
+    const baseCycles = this.cycTable[op];
+    const extraCycles = this.cycles - cycleBefore;
+    this.cycles = cycleBefore + baseCycles + extraCycles;
+    return this.cycles;
+  }
 
-          // ロード/ストア
-          const LDA = (m) => {
-            this.A = m & 0xff;
-            this.updateZN(this.A);
-          };
-          const LDX = (m) => {
-            this.X = m & 0xff;
-            this.updateZN(this.X);
-          };
-          const LDY = (m) => {
-            this.Y = m & 0xff;
-            this.updateZN(this.Y);
-          };
+  buildOpcodeTable() {
+    const t = new Array(256);
 
-          // ストア（メモリアドレスに書く）
-          const STA = (addr) => {
-            this.write(addr, this.A);
-          };
-          const STX = (addr) => {
-            this.write(addr, this.X);
-          };
-          const STY = (addr) => {
-            this.write(addr, this.Y);
-          };
+    // RMW helpers
+    const ASL = (v) => {
+      const c = (v >> 7) & 1;
+      const r = (v << 1) & 0xff;
+      this.setC(c);
+      this.updateZN(r);
+      return r;
+    };
+    const LSR = (v) => {
+      const c = v & 1;
+      const r = (v >>> 1) & 0xff;
+      this.setC(c);
+      this.updateZN(r);
+      return r;
+    };
+    const ROL = (v) => {
+      const cIn = this.P & 1;
+      const cOut = (v >> 7) & 1;
+      const r = ((v << 1) & 0xff) | cIn;
+      this.setC(cOut);
+      this.updateZN(r);
+      return r;
+    };
+    const ROR = (v) => {
+      const cIn = this.P & 1;
+      const cOut = v & 1;
+      const r = ((v >>> 1) | (cIn << 7)) & 0xff;
+      this.setC(cOut);
+      this.updateZN(r);
+      return r;
+    };
 
-          // ロジック
-          const ORA = (m) => {
-            this.A = (this.A | m) & 0xff;
-            this.updateZN(this.A);
-          };
-          const AND = (m) => {
-            this.A = this.A & m & 0xff;
-            this.updateZN(this.A);
-          };
-          const EOR = (m) => {
-            this.A = (this.A ^ m) & 0xff;
-            this.updateZN(this.A);
-          };
-
-          // INC/DEC
-          const INCv = (v) => {
-            const r = (v + 1) & 0xff;
-            this.updateZN(r);
-            return r;
-          };
-          const DECv = (v) => {
-            const r = (v - 1) & 0xff;
-            this.updateZN(r);
-            return r;
-          };
-
-          // 命令バインドの短縮（読み→演算系）
-          const bindReadOp = (table, opcodes, reader, fn) => {
-            for (const oc of opcodes)
-              table[oc] = function () {
-                fn.call(this, reader.call(this));
-              };
-          };
-          const bindRMW = (table, opcodes, writer, op) => {
-            for (const oc of opcodes)
-              table[oc] = function () {
-                writer.call(this, op);
-              };
-          };
-          const bindStore = (table, opcodes, addrMode, fn) => {
-            for (const oc of opcodes)
-              table[oc] = function () {
-                fn.call(this, addrMode.call(this));
-              };
-          };
-
-          // ========== ロード/ストア ==========
-          bindReadOp(t, [0xa9], R.IMM, LDA);
-          bindReadOp(t, [0xa5], R.ZP, LDA);
-          bindReadOp(t, [0xb5], R.ZPX, LDA);
-          bindReadOp(t, [0xad], R.ABS, LDA);
-          bindReadOp(t, [0xbd], R.ABX, LDA);
-          bindReadOp(t, [0xb9], R.ABY, LDA);
-          bindReadOp(t, [0xa1], R.IZX, LDA);
-          bindReadOp(t, [0xb1], R.IZY, LDA);
-
-          bindReadOp(t, [0xa2], R.IMM, LDX);
-          bindReadOp(t, [0xa6], R.ZP, LDX);
-          bindReadOp(t, [0xb6], R.ZPY, LDX);
-          bindReadOp(t, [0xae], R.ABS, LDX);
-          bindReadOp(t, [0xbe], R.ABY, LDX);
-
-          bindReadOp(t, [0xa0], R.IMM, LDY);
-          bindReadOp(t, [0xa4], R.ZP, LDY);
-          bindReadOp(t, [0xb4], R.ZPX, LDY);
-          bindReadOp(t, [0xac], R.ABS, LDY);
-          bindReadOp(t, [0xbc], R.ABX, LDY);
-
-          bindStore(t, [0x85], S.ZP, STA);
-          bindStore(t, [0x95], S.ZPX, STA);
-          bindStore(t, [0x8d], S.ABS, STA);
-          bindStore(t, [0x9d], S.ABX, STA);
-          bindStore(t, [0x99], S.ABY, STA);
-          bindStore(t, [0x81], S.IZX, STA);
-          bindStore(t, [0x91], S.IZY, STA);
-
-          bindStore(t, [0x86], S.ZP, STX);
-          bindStore(t, [0x96], S.ZPY, STX);
-          bindStore(t, [0x8e], S.ABS, STX);
-
-          bindStore(t, [0x84], S.ZP, STY);
-          bindStore(t, [0x94], S.ZPX, STY);
-          bindStore(t, [0x8c], S.ABS, STY);
-
-          // ========== 論理/算術 ==========
-          bindReadOp(
-            t,
-            [0x09, 0x05, 0x15, 0x0d, 0x1d, 0x19, 0x01, 0x11],
-            [R.IMM, R.ZP, R.ZPX, R.ABS, R.ABX, R.ABY, R.IZX, R.IZY][0],
-            ORA
-          ); // 下で個別に置く
-
-          // 個別展開（上の短縮は可読性低いので分けて定義）
-          bindReadOp(t, [0x09], R.IMM, ORA);
-          bindReadOp(t, [0x05], R.ZP, ORA);
-          bindReadOp(t, [0x15], R.ZPX, ORA);
-          bindReadOp(t, [0x0d], R.ABS, ORA);
-          bindReadOp(t, [0x1d], R.ABX, ORA);
-          bindReadOp(t, [0x19], R.ABY, ORA);
-          bindReadOp(t, [0x01], R.IZX, ORA);
-          bindReadOp(t, [0x11], R.IZY, ORA);
-
-          bindReadOp(t, [0x29], R.IMM, AND);
-          bindReadOp(t, [0x25], R.ZP, AND);
-          bindReadOp(t, [0x35], R.ZPX, AND);
-          bindReadOp(t, [0x2d], R.ABS, AND);
-          bindReadOp(t, [0x3d], R.ABX, AND);
-          bindReadOp(t, [0x39], R.ABY, AND);
-          bindReadOp(t, [0x21], R.IZX, AND);
-          bindReadOp(t, [0x31], R.IZY, AND);
-
-          bindReadOp(t, [0x49], R.IMM, EOR);
-          bindReadOp(t, [0x45], R.ZP, EOR);
-          bindReadOp(t, [0x55], R.ZPX, EOR);
-          bindReadOp(t, [0x4d], R.ABS, EOR);
-          bindReadOp(t, [0x5d], R.ABX, EOR);
-          bindReadOp(t, [0x59], R.ABY, EOR);
-          bindReadOp(t, [0x41], R.IZX, EOR);
-          bindReadOp(t, [0x51], R.IZY, EOR);
-
-          bindReadOp(t, [0x69], R.IMM, this.adc.bind(this));
-          bindReadOp(t, [0x65], R.ZP, this.adc.bind(this));
-          bindReadOp(t, [0x75], R.ZPX, this.adc.bind(this));
-          bindReadOp(t, [0x6d], R.ABS, this.adc.bind(this));
-          bindReadOp(t, [0x7d], R.ABX, this.adc.bind(this));
-          bindReadOp(t, [0x79], R.ABY, this.adc.bind(this));
-          bindReadOp(t, [0x61], R.IZX, this.adc.bind(this));
-          bindReadOp(t, [0x71], R.IZY, this.adc.bind(this));
-
-          bindReadOp(t, [0xe9], R.IMM, this.sbc.bind(this));
-          bindReadOp(t, [0xe5], R.ZP, this.sbc.bind(this));
-          bindReadOp(t, [0xf5], R.ZPX, this.sbc.bind(this));
-          bindReadOp(t, [0xed], R.ABS, this.sbc.bind(this));
-          bindReadOp(t, [0xfd], R.ABX, this.sbc.bind(this));
-          bindReadOp(t, [0xf9], R.ABY, this.sbc.bind(this));
-          bindReadOp(t, [0xe1], R.IZX, this.sbc.bind(this));
-          bindReadOp(t, [0xf1], R.IZY, this.sbc.bind(this));
-
-          // BIT
-          t[0x24] = function () {
-            BITexec.call(this, R.ZP.call(this));
-            this.cycles += 3;
-          };
-          t[0x2c] = function () {
-            BITexec.call(this, R.ABS.call(this));
-            this.cycles += 4;
-          };
-
-          // CMP/CPX/CPY
-          const CmpA = (m) => this.compare(this.A, m);
-          const CmpX = (m) => this.compare(this.X, m);
-          const CmpY = (m) => this.compare(this.Y, m);
-
-          bindReadOp(t, [0xc9], R.IMM, CmpA);
-          bindReadOp(t, [0xc5], R.ZP, CmpA);
-          bindReadOp(t, [0xd5], R.ZPX, CmpA);
-          bindReadOp(t, [0xcd], R.ABS, CmpA);
-          bindReadOp(t, [0xdd], R.ABX, CmpA);
-          bindReadOp(t, [0xd9], R.ABY, CmpA);
-          bindReadOp(t, [0xc1], R.IZX, CmpA);
-          bindReadOp(t, [0xd1], R.IZY, CmpA);
-
-          bindReadOp(t, [0xe0], R.IMM, CmpX);
-          bindReadOp(t, [0xe4], R.ZP, CmpX);
-          bindReadOp(t, [0xec], R.ABS, CmpX);
-
-          bindReadOp(t, [0xc0], R.IMM, CmpY);
-          bindReadOp(t, [0xc4], R.ZP, CmpY);
-          bindReadOp(t, [0xcc], R.ABS, CmpY);
-
-          // INC/DEC (メモリ)
-          bindRMW(t, [0xe6], W.ZP, INCv);
-          bindRMW(t, [0xf6], W.ZPX, INCv);
-          bindRMW(t, [0xee], W.ABS, INCv);
-          bindRMW(t, [0xfe], W.ABX, INCv);
-
-          bindRMW(t, [0xc6], W.ZP, DECv);
-          bindRMW(t, [0xd6], W.ZPX, DECv);
-          bindRMW(t, [0xce], W.ABS, DECv);
-          bindRMW(t, [0xde], W.ABX, DECv);
-
-          // INX/DEX/INY/DEY
-          // INX
-          t[0xe8] = function () {
-            this.X = (this.X + 1) & 0xff;
-            this.updateZN(this.X);
-            this.cycles += 2; // INX は 2サイクル
-          };
-
-          // INY
-          t[0xc8] = function () {
-            this.Y = (this.Y + 1) & 0xff;
-            this.updateZN(this.Y);
-            this.cycles += 2; // INY は 2サイクル
-          };
-
-          // DEX
-          t[0xca] = function () {
-            this.X = (this.X - 1) & 0xff;
-            this.updateZN(this.X);
-            this.cycles += 2; // DEX は 2サイクル
-          };
-
-          // DEY
-          t[0x88] = function () {
-            this.Y = (this.Y - 1) & 0xff;
-            this.updateZN(this.Y);
-            this.cycles += 2; // DEY は 2サイクル
-          };
-
-          // シフト/ロール (アキュムレータ版)
-          t[0x0a] = function () {
-            this.A = ASL(this.A);
-            this.cycles += 2; // ASL A は 2サイクル
-          };
-          t[0x4a] = function () {
-            this.A = LSR(this.A);
-            this.cycles += 2; // LSR A は 2サイクル
-          };
-          t[0x2a] = function () {
-            this.A = ROL(this.A);
-            this.cycles += 2; // ROL A は 2サイクル
-          };
-          t[0x6a] = function () {
-            this.A = ROR(this.A);
-            this.cycles += 2; // ROR A は 2サイクル
-          };
-
-          bindRMW(t, [0x06], W.ZP, ASL);
-          bindRMW(t, [0x16], W.ZPX, ASL);
-          bindRMW(t, [0x0e], W.ABS, ASL);
-          bindRMW(t, [0x1e], W.ABX, ASL);
-
-          bindRMW(t, [0x46], W.ZP, LSR);
-          bindRMW(t, [0x56], W.ZPX, LSR);
-          bindRMW(t, [0x4e], W.ABS, LSR);
-          bindRMW(t, [0x5e], W.ABX, LSR);
-
-          bindRMW(t, [0x26], W.ZP, ROL);
-          bindRMW(t, [0x36], W.ZPX, ROL);
-          bindRMW(t, [0x2e], W.ABS, ROL);
-          bindRMW(t, [0x3e], W.ABX, ROL);
-
-          bindRMW(t, [0x66], W.ZP, ROR);
-          bindRMW(t, [0x76], W.ZPX, ROR);
-          bindRMW(t, [0x6e], W.ABS, ROR);
-          bindRMW(t, [0x7e], W.ABX, ROR);
-
-          // 分岐
-          t[0x10] = function () {
-            this.cycles += 2;
-            BR((this.P & 0x80) === 0);
-          }; // BPL
-          t[0x30] = function () {
-            this.cycles += 2;
-            BR((this.P & 0x80) !== 0);
-          }; // BMI
-          t[0x50] = function () {
-            this.cycles += 2;
-            BR((this.P & 0x40) === 0);
-          }; // BVC
-          t[0x70] = function () {
-            this.cycles += 2;
-            BR((this.P & 0x40) !== 0);
-          }; // BVS
-          t[0x90] = function () {
-            this.cycles += 2;
-            BR((this.P & 0x01) === 0);
-          }; // BCC
-          t[0xb0] = function () {
-            this.cycles += 2;
-            BR((this.P & 0x01) !== 0);
-          }; // BCS
-          t[0xd0] = function () {
-            this.cycles += 2;
-            BR((this.P & 0x02) === 0);
-          }; // BNE
-          t[0xf0] = function () {
-            this.cycles += 2;
-            BR((this.P & 0x02) !== 0);
-          }; // BEQ
-
-          // ジャンプ/サブルーチン/リターン
-          t[0x4c] = function () {
-            this.cycles += 3;
-            this.PC = this.addr_abs();
-          }; // JMP abs
-          t[0x6c] = function () {
-            this.cycles += 5;
-            this.PC = this.addr_ind();
-          }; // JMP ind (6502バグはaddr_ind側で再現済み)
-          t[0x20] = function () {
-            this.cycles += 6;
-            const a = this.addr_abs();
-            const ret = (this.PC - 1) & 0xffff;
-            this.push((ret >> 8) & 0xff);
-            this.push(ret & 0xff);
-            this.PC = a;
-          }; // JSR
-          t[0x60] = function () {
-            this.cycles += 6;
-            const lo = this.pull();
-            const hi_ = this.pull();
-            this.PC = (((hi_ << 8) | lo) + 1) & 0xffff;
-          }; // RTS
-          t[0x40] = function () {
-            this.cycles += 6;
-            const p = this.pull() | 0x20;
-            const lo = this.pull();
-            const hi_ = this.pull();
-            this.P = p & ~0x10;
-            this.PC = (hi_ << 8) | lo;
-          }; // RTI
-
-          // スタック
-          t[0x48] = function () {
-            this.cycles += 3;
-            this.push(this.A);
-          }; // PHA
-          t[0x68] = function () {
-            this.cycles += 4;
-            this.A = this.pull();
-            this.updateZN(this.A);
-          }; // PLA
-          t[0x08] = function () {
-            this.cycles += 3;
-            this.push(this.P | 0x10);
-          }; // PHP (B=1でプッシュ)
-          t[0x28] = function () {
-            this.cycles += 4;
-            this.P = (this.pull() & ~0x10) | 0x20;
-          }; // PLP (B=0固定, bit5=1)
-
-          // レジスタ転送
-          t[0xaa] = function () {
-            this.cycles += 2;
-            this.X = this.A;
-            this.updateZN(this.X);
-          }; // TAX
-          t[0x8a] = function () {
-            this.cycles += 2;
-            this.A = this.X;
-            this.updateZN(this.A);
-          }; // TXA
-          t[0xa8] = function () {
-            this.cycles += 2;
-            this.Y = this.A;
-            this.updateZN(this.Y);
-          }; // TAY
-          t[0x98] = function () {
-            this.cycles += 2;
-            this.A = this.Y;
-            this.updateZN(this.A);
-          }; // TYA
-          t[0xba] = function () {
-            this.cycles += 2;
-            this.X = this.S & 0xff;
-            this.updateZN(this.X);
-          }; // TSX
-          t[0x9a] = function () {
-            this.cycles += 2;
-            this.S = this.X & 0xff;
-          }; // TXS
-
-          // フラグ単発
-          t[0x18] = function () {
-            this.cycles += 2;
-            this.setC(0);
-          }; // CLC
-          t[0x38] = function () {
-            this.cycles += 2;
-            this.setC(1);
-          }; // SEC
-          t[0x58] = function () {
-            this.cycles += 2;
-            this.setI(0);
-          }; // CLI
-          t[0x78] = function () {
-            this.cycles += 2;
-            this.setI(1);
-          }; // SEI
-          t[0xb8] = function () {
-            this.cycles += 2;
-            this.setV(0);
-          }; // CLV
-          t[0xd8] = function () {
-            this.cycles += 2;
-            this.setD(0);
-          }; // CLD
-          t[0xf8] = function () {
-            this.cycles += 2;
-            this.setD(1);
-          }; // SED（2A03では効果なし）
-
-          // BRK
-          t[0x00] = function () {
-            this.cycles += 7;
-            this.fetch(); // padding
-            this.push((this.PC >> 8) & 0xff);
-            this.push(this.PC & 0xff);
-            this.push(this.P | 0x10);
-            this.setI(1);
-            this.PC = this.read16(0xfffe);
-          };
-
-          // NOP（公式）
-          t[0xea] = function () {
-            this.cycles += 2;
-          };
-
-          // 未使用（非公式）は安全に例外 or NOP にしておく（ここではNOP化）
-          for (let i = 0; i < 256; i++) {
-            if (!t[i])
-              t[i] = function () {
-                /* unofficial opcode: NOP */
-              };
-          }
-          return t;
+    // Branch helper
+    const BR = (cond) => {
+      const off = this.rel();
+      if (cond) {
+        const oldPC = this.PC;
+        this.PC = (this.PC + off) & 0xffff;
+        this.cycles++; // 分岐成功で+1
+        // ページクロスでさらに+1
+        if ((oldPC & 0xff00) !== (this.PC & 0xff00)) {
+          this.cycles++;
         }
       }
+    };
 
-      class Controller {
-        constructor() {
-          this.state = 0;
-          this.latch = 0;
-          this.strobe = 0;
-          this.index = 0;
-        }
+    // BIT instruction
+    const BIT = (m) => {
+      const v = m & 0xff;
+      this.P = (this.P & ~0x02) | ((this.A & v) === 0 ? 0x02 : 0x00);
+      this.P = (this.P & ~0x40) | (v & 0x40);
+      this.P = (this.P & ~0x80) | (v & 0x80);
+    };
 
-        write(val) {
-          const strobe = val & 1;
-          this.strobe = strobe;
-          if (strobe) {
-            // ストローブが1の間は常に最新状態を返す
-            this.latch = this.state;
-            this.index = 0;
-          } else {
-            // 0に切り替わった瞬間にラッチを取る
-            this.latch = this.state;
-            this.index = 0;
-          }
-        }
+    // Load/Store operations
+    const LDA = (m) => { this.A = m & 0xff; this.updateZN(this.A); };
+    const LDX = (m) => { this.X = m & 0xff; this.updateZN(this.X); };
+    const LDY = (m) => { this.Y = m & 0xff; this.updateZN(this.Y); };
+    const STA = (addr) => { this.write(addr, this.A); };
+    const STX = (addr) => { this.write(addr, this.X); };
+    const STY = (addr) => { this.write(addr, this.Y); };
 
-        read() {
-          let ret = 0;
-          if (this.index < 8) {
-            ret = (this.latch >> this.index) & 1;
-          } else {
-            ret = 1; // 9回目以降は1
-          }
-          if (!this.strobe && this.index < 8) {
-            this.index++;
-          }
-          return ret; // bit0のみ返す
-        }
+    // Logic operations
+    const ORA = (m) => { this.A = (this.A | m) & 0xff; this.updateZN(this.A); };
+    const AND = (m) => { this.A = (this.A & m) & 0xff; this.updateZN(this.A); };
+    const EOR = (m) => { this.A = (this.A ^ m) & 0xff; this.updateZN(this.A); };
 
-        setButtons({ A, B, Select, Start, Up, Down, Left, Right }) {
-          let s = 0;
-          if (A) s |= 1 << 0;
-          if (B) s |= 1 << 1;
-          if (Select) s |= 1 << 2;
-          if (Start) s |= 1 << 3;
-          if (Up) s |= 1 << 4;
-          if (Down) s |= 1 << 5;
-          if (Left) s |= 1 << 6;
-          if (Right) s |= 1 << 7;
-          this.state = s;
-        }
-      }
+    // INC/DEC
+    const INC = (v) => { const r = (v + 1) & 0xff; this.updateZN(r); return r; };
+    const DEC = (v) => { const r = (v - 1) & 0xff; this.updateZN(r); return r; };
 
-      // 押しっぱなし対応（マウス・タッチ両方
+    // === LDA ===
+    t[0xa9] = function() { LDA.call(this, this.read(this.addr_imm())); };
+    t[0xa5] = function() { LDA.call(this, this.read(this.addr_zp())); };
+    t[0xb5] = function() { LDA.call(this, this.read(this.addr_zpx())); };
+    t[0xad] = function() { LDA.call(this, this.read(this.addr_abs())); };
+    t[0xbd] = function() { LDA.call(this, this.read(this.addr_abx(true))); };
+    t[0xb9] = function() { LDA.call(this, this.read(this.addr_aby(true))); };
+    t[0xa1] = function() { LDA.call(this, this.read(this.addr_izx())); };
+    t[0xb1] = function() { LDA.call(this, this.read(this.addr_izy(true))); };
+
+    // === LDX ===
+    t[0xa2] = function() { LDX.call(this, this.read(this.addr_imm())); };
+    t[0xa6] = function() { LDX.call(this, this.read(this.addr_zp())); };
+    t[0xb6] = function() { LDX.call(this, this.read(this.addr_zpy())); };
+    t[0xae] = function() { LDX.call(this, this.read(this.addr_abs())); };
+    t[0xbe] = function() { LDX.call(this, this.read(this.addr_aby(true))); };
+
+    // === LDY ===
+    t[0xa0] = function() { LDY.call(this, this.read(this.addr_imm())); };
+    t[0xa4] = function() { LDY.call(this, this.read(this.addr_zp())); };
+    t[0xb4] = function() { LDY.call(this, this.read(this.addr_zpx())); };
+    t[0xac] = function() { LDY.call(this, this.read(this.addr_abs())); };
+    t[0xbc] = function() { LDY.call(this, this.read(this.addr_abx(true))); };
+
+    // === STA ===
+    t[0x85] = function() { STA.call(this, this.addr_zp()); };
+    t[0x95] = function() { STA.call(this, this.addr_zpx()); };
+    t[0x8d] = function() { STA.call(this, this.addr_abs()); };
+    t[0x9d] = function() { STA.call(this, this.addr_abx()); };
+    t[0x99] = function() { STA.call(this, this.addr_aby()); };
+    t[0x81] = function() { STA.call(this, this.addr_izx()); };
+    t[0x91] = function() { STA.call(this, this.addr_izy()); };
+
+    // === STX ===
+    t[0x86] = function() { STX.call(this, this.addr_zp()); };
+    t[0x96] = function() { STX.call(this, this.addr_zpy()); };
+    t[0x8e] = function() { STX.call(this, this.addr_abs()); };
+
+    // === STY ===
+    t[0x84] = function() { STY.call(this, this.addr_zp()); };
+    t[0x94] = function() { STY.call(this, this.addr_zpx()); };
+    t[0x8c] = function() { STY.call(this, this.addr_abs()); };
+
+    // === ORA ===
+    t[0x09] = function() { ORA.call(this, this.read(this.addr_imm())); };
+    t[0x05] = function() { ORA.call(this, this.read(this.addr_zp())); };
+    t[0x15] = function() { ORA.call(this, this.read(this.addr_zpx())); };
+    t[0x0d] = function() { ORA.call(this, this.read(this.addr_abs())); };
+    t[0x1d] = function() { ORA.call(this, this.read(this.addr_abx(true))); };
+    t[0x19] = function() { ORA.call(this, this.read(this.addr_aby(true))); };
+    t[0x01] = function() { ORA.call(this, this.read(this.addr_izx())); };
+    t[0x11] = function() { ORA.call(this, this.read(this.addr_izy(true))); };
+
+    // === AND ===
+    t[0x29] = function() { AND.call(this, this.read(this.addr_imm())); };
+    t[0x25] = function() { AND.call(this, this.read(this.addr_zp())); };
+    t[0x35] = function() { AND.call(this, this.read(this.addr_zpx())); };
+    t[0x2d] = function() { AND.call(this, this.read(this.addr_abs())); };
+    t[0x3d] = function() { AND.call(this, this.read(this.addr_abx(true))); };
+    t[0x39] = function() { AND.call(this, this.read(this.addr_aby(true))); };
+    t[0x21] = function() { AND.call(this, this.read(this.addr_izx())); };
+    t[0x31] = function() { AND.call(this, this.read(this.addr_izy(true))); };
+
+    // === EOR ===
+    t[0x49] = function() { EOR.call(this, this.read(this.addr_imm())); };
+    t[0x45] = function() { EOR.call(this, this.read(this.addr_zp())); };
+    t[0x55] = function() { EOR.call(this, this.read(this.addr_zpx())); };
+    t[0x4d] = function() { EOR.call(this, this.read(this.addr_abs())); };
+    t[0x5d] = function() { EOR.call(this, this.read(this.addr_abx(true))); };
+    t[0x59] = function() { EOR.call(this, this.read(this.addr_aby(true))); };
+    t[0x41] = function() { EOR.call(this, this.read(this.addr_izx())); };
+    t[0x51] = function() { EOR.call(this, this.read(this.addr_izy(true))); };
+
+    // === ADC ===
+    t[0x69] = function() { this.adc(this.read(this.addr_imm())); };
+    t[0x65] = function() { this.adc(this.read(this.addr_zp())); };
+    t[0x75] = function() { this.adc(this.read(this.addr_zpx())); };
+    t[0x6d] = function() { this.adc(this.read(this.addr_abs())); };
+    t[0x7d] = function() { this.adc(this.read(this.addr_abx(true))); };
+    t[0x79] = function() { this.adc(this.read(this.addr_aby(true))); };
+    t[0x61] = function() { this.adc(this.read(this.addr_izx())); };
+    t[0x71] = function() { this.adc(this.read(this.addr_izy(true))); };
+
+    // === SBC ===
+    t[0xe9] = function() { this.sbc(this.read(this.addr_imm())); };
+    t[0xe5] = function() { this.sbc(this.read(this.addr_zp())); };
+    t[0xf5] = function() { this.sbc(this.read(this.addr_zpx())); };
+    t[0xed] = function() { this.sbc(this.read(this.addr_abs())); };
+    t[0xfd] = function() { this.sbc(this.read(this.addr_abx(true))); };
+    t[0xf9] = function() { this.sbc(this.read(this.addr_aby(true))); };
+    t[0xe1] = function() { this.sbc(this.read(this.addr_izx())); };
+    t[0xf1] = function() { this.sbc(this.read(this.addr_izy(true))); };
+
+    // === BIT ===
+    t[0x24] = function() { BIT.call(this, this.read(this.addr_zp())); };
+    t[0x2c] = function() { BIT.call(this, this.read(this.addr_abs())); };
+
+    // === CMP/CPX/CPY ===
+    t[0xc9] = function() { this.compare(this.A, this.read(this.addr_imm())); };
+    t[0xc5] = function() { this.compare(this.A, this.read(this.addr_zp())); };
+    t[0xd5] = function() { this.compare(this.A, this.read(this.addr_zpx())); };
+    t[0xcd] = function() { this.compare(this.A, this.read(this.addr_abs())); };
+    t[0xdd] = function() { this.compare(this.A, this.read(this.addr_abx(true))); };
+    t[0xd9] = function() { this.compare(this.A, this.read(this.addr_aby(true))); };
+    t[0xc1] = function() { this.compare(this.A, this.read(this.addr_izx())); };
+    t[0xd1] = function() { this.compare(this.A, this.read(this.addr_izy(true))); };
+
+    t[0xe0] = function() { this.compare(this.X, this.read(this.addr_imm())); };
+    t[0xe4] = function() { this.compare(this.X, this.read(this.addr_zp())); };
+    t[0xec] = function() { this.compare(this.X, this.read(this.addr_abs())); };
+
+    t[0xc0] = function() { this.compare(this.Y, this.read(this.addr_imm())); };
+    t[0xc4] = function() { this.compare(this.Y, this.read(this.addr_zp())); };
+    t[0xcc] = function() { this.compare(this.Y, this.read(this.addr_abs())); };
+
+    // === INC (memory) ===
+    t[0xe6] = function() { const a = this.addr_zp(); this.write(a, INC(this.read(a))); };
+    t[0xf6] = function() { const a = this.addr_zpx(); this.write(a, INC(this.read(a))); };
+    t[0xee] = function() { const a = this.addr_abs(); this.write(a, INC(this.read(a))); };
+    t[0xfe] = function() { const a = this.addr_abx(); this.write(a, INC(this.read(a))); };
+
+    // === DEC (memory) ===
+    t[0xc6] = function() { const a = this.addr_zp(); this.write(a, DEC(this.read(a))); };
+    t[0xd6] = function() { const a = this.addr_zpx(); this.write(a, DEC(this.read(a))); };
+    t[0xce] = function() { const a = this.addr_abs(); this.write(a, DEC(this.read(a))); };
+    t[0xde] = function() { const a = this.addr_abx(); this.write(a, DEC(this.read(a))); };
+
+    // === INX/INY/DEX/DEY ===
+    t[0xe8] = function() { this.X = (this.X + 1) & 0xff; this.updateZN(this.X); };
+    t[0xc8] = function() { this.Y = (this.Y + 1) & 0xff; this.updateZN(this.Y); };
+    t[0xca] = function() { this.X = (this.X - 1) & 0xff; this.updateZN(this.X); };
+    t[0x88] = function() { this.Y = (this.Y - 1) & 0xff; this.updateZN(this.Y); };
+
+    // === Shift/Rotate (Accumulator) ===
+    t[0x0a] = function() { this.A = ASL(this.A); };
+    t[0x4a] = function() { this.A = LSR(this.A); };
+    t[0x2a] = function() { this.A = ROL(this.A); };
+    t[0x6a] = function() { this.A = ROR(this.A); };
+
+    // === ASL (memory) ===
+    t[0x06] = function() { const a = this.addr_zp(); this.write(a, ASL(this.read(a))); };
+    t[0x16] = function() { const a = this.addr_zpx(); this.write(a, ASL(this.read(a))); };
+    t[0x0e] = function() { const a = this.addr_abs(); this.write(a, ASL(this.read(a))); };
+    t[0x1e] = function() { const a = this.addr_abx(); this.write(a, ASL(this.read(a))); };
+
+    // === LSR (memory) ===
+    t[0x46] = function() { const a = this.addr_zp(); this.write(a, LSR(this.read(a))); };
+    t[0x56] = function() { const a = this.addr_zpx(); this.write(a, LSR(this.read(a))); };
+    t[0x4e] = function() { const a = this.addr_abs(); this.write(a, LSR(this.read(a))); };
+    t[0x5e] = function() { const a = this.addr_abx(); this.write(a, LSR(this.read(a))); };
+
+    // === ROL (memory) ===
+    t[0x26] = function() { const a = this.addr_zp(); this.write(a, ROL(this.read(a))); };
+    t[0x36] = function() { const a = this.addr_zpx(); this.write(a, ROL(this.read(a))); };
+    t[0x2e] = function() { const a = this.addr_abs(); this.write(a, ROL(this.read(a))); };
+    t[0x3e] = function() { const a = this.addr_abx(); this.write(a, ROL(this.read(a))); };
+
+    // === ROR (memory) ===
+    t[0x66] = function() { const a = this.addr_zp(); this.write(a, ROR(this.read(a))); };
+    t[0x76] = function() { const a = this.addr_zpx(); this.write(a, ROR(this.read(a))); };
+    t[0x6e] = function() { const a = this.addr_abs(); this.write(a, ROR(this.read(a))); };
+    t[0x7e] = function() { const a = this.addr_abx(); this.write(a, ROR(this.read(a))); };
+
+    // === Branches ===
+    t[0x10] = function() { BR.call(this, (this.P & 0x80) === 0); }; // BPL
+    t[0x30] = function() { BR.call(this, (this.P & 0x80) !== 0); }; // BMI
+    t[0x50] = function() { BR.call(this, (this.P & 0x40) === 0); }; // BVC
+    t[0x70] = function() { BR.call(this, (this.P & 0x40) !== 0); }; // BVS
+    t[0x90] = function() { BR.call(this, (this.P & 0x01) === 0); }; // BCC
+    t[0xb0] = function() { BR.call(this, (this.P & 0x01) !== 0); }; // BCS
+    t[0xd0] = function() { BR.call(this, (this.P & 0x02) === 0); }; // BNE
+    t[0xf0] = function() { BR.call(this, (this.P & 0x02) !== 0); }; // BEQ
+
+    // === Jumps/Subroutines ===
+    t[0x4c] = function() { this.PC = this.addr_abs(); }; // JMP abs
+    t[0x6c] = function() { this.PC = this.addr_ind(); }; // JMP ind
+    t[0x20] = function() { // JSR
+      const a = this.addr_abs();
+      const ret = (this.PC - 1) & 0xffff;
+      this.push((ret >> 8) & 0xff);
+      this.push(ret & 0xff);
+      this.PC = a;
+    };
+    t[0x60] = function() { // RTS
+      const lo = this.pull();
+      const hi = this.pull();
+      this.PC = (((hi << 8) | lo) + 1) & 0xffff;
+    };
+    t[0x40] = function() { // RTI
+      this.P = (this.pull() | 0x20) & ~0x10;
+      const lo = this.pull();
+      const hi = this.pull();
+      this.PC = (hi << 8) | lo;
+    };
+
+    // === Stack ===
+    t[0x48] = function() { this.push(this.A); }; // PHA
+    t[0x68] = function() { this.A = this.pull(); this.updateZN(this.A); }; // PLA
+    t[0x08] = function() { this.push(this.P | 0x10); }; // PHP
+    t[0x28] = function() { this.P = (this.pull() & ~0x10) | 0x20; }; // PLP
+
+    // === Register Transfers ===
+    t[0xaa] = function() { this.X = this.A; this.updateZN(this.X); }; // TAX
+    t[0x8a] = function() { this.A = this.X; this.updateZN(this.A); }; // TXA
+    t[0xa8] = function() { this.Y = this.A; this.updateZN(this.Y); }; // TAY
+    t[0x98] = function() { this.A = this.Y; this.updateZN(this.A); }; // TYA
+    t[0xba] = function() { this.X = this.S; this.updateZN(this.X); }; // TSX
+    t[0x9a] = function() { this.S = this.X; }; // TXS
+
+    // === Flag Instructions ===
+    t[0x18] = function() { this.setC(0); }; // CLC
+    t[0x38] = function() { this.setC(1); }; // SEC
+    t[0x58] = function() { this.setI(0); }; // CLI
+    t[0x78] = function() { this.setI(1); }; // SEI
+    t[0xb8] = function() { this.setV(0); }; // CLV
+    t[0xd8] = function() { this.setD(0); }; // CLD
+    t[0xf8] = function() { this.setD(1); }; // SED
+
+    // === BRK ===
+    t[0x00] = function() {
+      this.fetch(); // padding
+      this.push((this.PC >> 8) & 0xff);
+      this.push(this.PC & 0xff);
+      this.push(this.P | 0x10);
+      this.setI(1);
+      this.PC = this.read16(0xfffe);
+    };
+
+    // === NOP ===
+    t[0xea] = function() { /* NOP */ };
+
+    // Fill undefined opcodes with NOP
+    for (let i = 0; i < 256; i++) {
+      if (!t[i]) t[i] = function() { /* unofficial: NOP */ };
+    }
+
+    return t;
+  }
+}
+
+class Controller {
+  constructor() {
+    this.state = 0;
+    this.latch = 0;
+    this.strobe = 0;
+    this.index = 0;
+  }
+
+  write(val) {
+    const strobe = val & 1;
+    this.strobe = strobe;
+    if (strobe) {
+      this.latch = this.state;
+      this.index = 0;
+    } else {
+      this.latch = this.state;
+      this.index = 0;
+    }
+  }
+
+  read() {
+    let ret = 0;
+    if (this.index < 8) {
+      ret = (this.latch >> this.index) & 1;
+    } else {
+      ret = 1;
+    }
+    if (!this.strobe && this.index < 8) {
+      this.index++;
+    }
+    return ret;
+  }
+
+  setButtons({ A, B, Select, Start, Up, Down, Left, Right }) {
+    let s = 0;
+    if (A) s |= 1 << 0;
+    if (B) s |= 1 << 1;
+    if (Select) s |= 1 << 2;
+    if (Start) s |= 1 << 3;
+    if (Up) s |= 1 << 4;
+    if (Down) s |= 1 << 5;
+    if (Left) s |= 1 << 6;
+    if (Right) s |= 1 << 7;
+    this.state = s;
+  }
+}
+// 押しっぱなし対応（マウス・タッチ両方
       class Bus {
         constructor() {
           this.cpu = new CPU();
