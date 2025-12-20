@@ -1453,77 +1453,67 @@ class BackgroundUnit {
     const { timing, reg } = this.ppu;
     const { scanline, cycle } = timing;
 
-    // Visible scanline + pre-render line
-    
     const isRenderLine = scanline < 240 || scanline === 261;
-    
-    const isRenderCycle = cycle >= 1 && cycle <= 256;
-    const isPrefetchCycle = cycle >= 321 && cycle <= 336;
- if (!isRenderLine) return;
+    if (!isRenderLine) return;
 
-if (cycle >= 2 && cycle <= 257) {
-  this.patternLo <<= 1;
-  this.patternHi <<= 1;
-  this.attrLo <<= 1;
-  this.attrHi <<= 1;
-}
+    // レンダリングが有効かチェック
+    const renderingEnabled = (reg.PPUMASK & 0x18) !== 0;
+    if (!renderingEnabled) return;
 
-
-   
+    // Visible + prefetch cycles
+    const isFetchCycle = (cycle >= 1 && cycle <= 256) || (cycle >= 321 && cycle <= 336);
     
-     
-    // タイル境界でフェッチ・ロード
-    const cycleMod8 = cycle % 8;
-    
-    switch (cycleMod8) {
+    if (isFetchCycle) {
+      // タイル境界でフェッチ・ロード
+      const cycleMod8 = cycle % 8;
       
-      case 1: // Nametable fetch
-        this.fetchNametable();
-        break;
-      case 3: // Attribute fetch
-        this.fetchAttribute();
-        break;
-      case 5: // Pattern low fetch
-        this.fetchPatternLow();
-        break;
-      case 7: // Pattern high fetch
-        this.fetchPatternHigh();
-        break;
-      case 0: // Reload shift registers
-        this.reloadShiftRegisters();
-        // Coarse X インクリメント
-       // cycle % 8 === 0 のときだけ
-if ((cycle >= 8 && cycle <= 256) || cycle === 328 || cycle === 336) {
+      switch (cycleMod8) {
+        case 1: // Nametable fetch
+          this.fetchNametable();
+          break;
+        case 3: // Attribute fetch
+          this.fetchAttribute();
+          break;
+        case 5: // Pattern low fetch
+          this.fetchPatternLow();
+          break;
+        case 7: // Pattern high fetch
+          this.fetchPatternHigh();
+          break;
+        case 0: // Reload shift registers
+          this.reloadShiftRegisters();
+          // Coarse X インクリメント (cycle 8, 16, ..., 256 および 328, 336)
+          if ((cycle >= 8 && cycle <= 256) || cycle === 328 || cycle === 336) {
             this.incrementX();
           }
-
-        break;
+          break;
+      }
     }
 
-    // シフトレジスタを左シフト (描画サイクル中のみ)
-  
+    // シフトレジスタを左シフト (描画サイクル中)
+    // cycle 1 で描画が始まるので、cycle 2-257 の間にシフト
+    if (cycle >= 2 && cycle <= 257) {
+      this.patternLo <<= 1;
+      this.patternHi <<= 1;
+      this.attrLo <<= 1;
+      this.attrHi <<= 1;
+    }
 
     // Copy horizontal bits at cycle 257
-   // copyX は pre-render でも必要
-if (cycle === 257) {
-  this.copyX();
-}
-
+    if (cycle === 257) {
+      this.copyX();
+    }
 
     // Increment Y at cycle 256
-    // Increment Y at cycle 256 (visible scanlines only)
-if (cycle === 256) {
-  this.incrementY();
-}
-
-
+    if (cycle === 256) {
+      this.incrementY();
+    }
 
     // Copy vertical bits (pre-render line only)
     if (scanline === 261 && cycle >= 280 && cycle <= 304) {
       this.copyY();
     }
   }
-
   fetchNametable() {
     const v = this.ppu.reg.v;
     const ntAddr = 0x2000 | (v & 0x0FFF);
