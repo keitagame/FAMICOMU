@@ -1454,8 +1454,8 @@ class BackgroundUnit {
     const { scanline, cycle } = timing;
 
     // Visible scanline + pre-render line
-    const isRenderLine = scanline < 240;
-
+    
+    const isRenderLine = scanline < 240 || scanline === 261;
     
     const isRenderCycle = cycle >= 1 && cycle <= 256;
     const isPrefetchCycle = cycle >= 321 && cycle <= 336;
@@ -1485,30 +1485,34 @@ class BackgroundUnit {
       case 0: // Reload shift registers
         this.reloadShiftRegisters();
         // Coarse X インクリメント
-        if (cycle <= 256 && (scanline < 240 || scanline === 261))  {
-          this.incrementX();
-        }
+        if (scanline < 240 && cycle <= 256) {
+  this.incrementX();
+}
+
         break;
     }
 
     // シフトレジスタを左シフト (描画サイクル中のみ)
-    if (cycle >= 2 && cycle <= 256) {
-      this.patternLo <<= 1;
-      this.patternHi <<= 1;
-      this.attrLo <<= 1;
-      this.attrHi <<= 1;
-    }
+   if (scanline < 240 && cycle >= 2 && cycle <= 256) {
+  this.patternLo <<= 1;
+  this.patternHi <<= 1;
+  this.attrLo <<= 1;
+  this.attrHi <<= 1;
+}
 
     // Copy horizontal bits at cycle 257
-    if (cycle === 257) {
-      this.copyX();
-    }
+   // copyX は pre-render でも必要
+if (cycle === 257 && (scanline < 240 || scanline === 261)) {
+  this.copyX();
+}
+
 
     // Increment Y at cycle 256
     // Increment Y at cycle 256 (visible scanlines only)
 if (cycle === 256 && scanline < 240) {
   this.incrementY();
 }
+
 
 
     // Copy vertical bits (pre-render line only)
@@ -2600,160 +2604,130 @@ class Controller {
   }
 }
 // 押しっぱなし対応（マウス・タッチ両方
-      class Bus {
-        constructor() {
-          this.cpu = new CPU();
-          this.cpuRAM = new Uint8Array(0x800);
-          this.cartridge = null;
-          this.mapper = null;
-          this.ppu = new PPU(this);
-          this.ctrl1 = new Controller();
-          this.ctrl2 = new Controller();
-          this.nmiLine = false;
-          this.irqLine = false;
-        }
-        insertCartridge(cart) {
-          this.cartridge = cart;
+     
+class Bus {
+  constructor() {
+    this.cpu = new CPU(this);
+    this.cpuRAM = new Uint8Array(0x800);
+    this.cartridge = null;
+    this.mapper = null;
+    this.ppu = new PPU(this); // PPU は後で設定
+    this.ctrl1 = new Controller();
+    this.ctrl2 = new Controller();
+    this.nmiLine = false;
+    this.irqLine = false;
+  }
 
-          switch (cart.mapper) {
-            case 0:
-              this.mapper = new Mapper0(cart);
-              break;
-            case 1:
-              this.mapper = new Mapper1(cart);
-              break;
-            case 2:
-              this.mapper = new Mapper2(cart);
-              break;
-            case 3:
-              this.mapper = new Mapper3(cart);
-              break;
-            case 4:
-              this.mapper = new Mapper4(cart);
-              break;
-            case 7:
-              this.mapper = new Mapper7(cart, this);
-              break;
-            case 9:
-              this.mapper = new Mapper9(cart, this);
-              break;
-            case 10:
-              this.mapper = new Mapper10(cart, this);
-              break;
-            case 30:
-              this.mapper = new Mapper30(cart, this);
-              break;
-            case 66:
-              this.mapper = new Mapper66(cart, this);
-              break;
-            case 71:
-              this.mapper = new Mapper71(cart, this);
-              break;
-            case 75:
-              this.mapper = new Mapper75(cart, this);
-              break;
-            case 79:
-              this.mapper = new Mapper79(cart, this);
-              break;
-            case 115:
-              this.mapper = new Mapper115(cart, this);
-              break;
-            case 144:
-              this.mapper = new Mapper144(cart, this);
-              break;
-            case 148:
-              this.mapper = new Mapper148(cart, this);
-              break;
-            case 228:
-              this.mapper = new Mapper228(cart, this);
-              break;
-            default:
-              throw new Error(`Unsupported mapper ${cart.mapper}`);
-          }
-        }
-        cpuRead(addr) {
-          addr &= 0xffff;
-          if (addr < 0x2000) return this.cpuRAM[addr & 0x7ff];
-          if (addr < 0x4000) return this.ppu.cpuRead(0x2000 + (addr & 7));
-          if (addr === 0x4016) return this.ctrl1.read();
-          if (addr === 0x4017) return this.ctrl2.read();
-          if (addr >= 0x6000 && addr < 0x8000) return this.mapper.cpuRead(addr); // ← 追加
-          if (addr >= 0x8000) return this.mapper.cpuRead(addr);
-          return 0;
-        }
+  insertCartridge(cart) {
+    this.cartridge = cart;
+    switch (cart.mapper) {
+      case 0: this.mapper = new Mapper0(cart); break;
+      case 1: this.mapper = new Mapper1(cart); break;
+      case 2: this.mapper = new Mapper2(cart); break;
+      case 3: this.mapper = new Mapper3(cart); break;
+      case 4: this.mapper = new Mapper4(cart); break;
+      case 7: this.mapper = new Mapper7(cart, this); break;
+      case 9: this.mapper = new Mapper9(cart, this); break;
+      case 10: this.mapper = new Mapper10(cart, this); break;
+      case 30: this.mapper = new Mapper30(cart, this); break;
+      case 66: this.mapper = new Mapper66(cart, this); break;
+      case 71: this.mapper = new Mapper71(cart, this); break;
+      case 75: this.mapper = new Mapper75(cart, this); break;
+      case 79: this.mapper = new Mapper79(cart, this); break;
+      case 115: this.mapper = new Mapper115(cart, this); break;
+      case 144: this.mapper = new Mapper144(cart, this); break;
+      case 148: this.mapper = new Mapper148(cart, this); break;
+      case 228: this.mapper = new Mapper228(cart, this); break;
+      default: throw new Error(`Unsupported mapper ${cart.mapper}`);
+    }
+  }
 
-        cpuWrite(addr, val) {
-          addr &= 0xffff;
-          val &= 0xff;
-          if (addr < 0x2000) {
-            this.cpuRAM[addr & 0x7ff] = val;
-            return;
-          }
-          if (addr < 0x4000) {
-            this.ppu.cpuWrite(0x2000 + (addr & 7), val);
-            return;
-          }
-          if (addr === 0x4014) {
-            const base = val << 8;
-            this.cpu.cycles += this.cpu.cycles & 1 ? 514 : 513;
+  cpuRead(addr) {
+    addr &= 0xffff;
+    if (addr < 0x2000) return this.cpuRAM[addr & 0x7ff];
+    if (addr < 0x4000) return this.ppu.cpuRead(0x2000 + (addr & 7));
+    if (addr === 0x4016) return this.ctrl1.read();
+    if (addr === 0x4017) return this.ctrl2.read();
+    if (addr >= 0x6000 && addr < 0x8000) return this.mapper.cpuRead(addr);
+    if (addr >= 0x8000) return this.mapper.cpuRead(addr);
+    return 0;
+  }
 
-            for (let i = 0; i < 256; i++)
-              this.ppu.oam[i] = this.cpuRead(base + i);
-            return;
-          }
-          if (addr === 0x4016) {
-            this.ctrl1.write(val);
-            this.ctrl2.write(val);
-            return;
-          }
-          if (addr >= 0x6000 && addr < 0x8000) {
-            this.mapper.cpuWrite(addr, val);
-            return;
-          } // ← 追加
-          if (addr >= 0x8000) {
-            this.mapper.cpuWrite(addr, val);
-            return;
-          }
-        }
-
-        // PPUアクセス経由
-        cartCHRRead(addr) {
-          return this.mapper.ppuRead(addr);
-        }
-        cartCHRWrite(addr, val) {
-          this.mapper.ppuWrite(addr, val);
-        }
-        ntMirror(addr) {
-          const a = (addr - 0x2000) & 0x0fff;
-          const table = (a >> 10) & 3;
-          const offset = a & 0x03ff;
-          const m = this.mapper.mirroring(); // 0: H, 1: V
-          const map = m === 0 ? [0, 0, 1, 1] : [0, 1, 0, 1];
-          return map[table] * 0x400 + offset;
-        }
-        requestNMI() {
-          this.nmiLine = true;
-        }
-        takeNMI() {
-          if (this.nmiLine) {
-            this.nmiLine = false;
-            return true;
-          }
-          return false;
-        }
-        requestIRQ() {
-          this.irqLine = true;
-        }
-        takeIRQ() {
-          if (this.irqLine) {
-            this.irqLine = false;
-            return true;
-          }
-          return false;
-        }
-
-        // CPU read/write mapping
+  cpuWrite(addr, val) {
+    addr &= 0xffff;
+    val &= 0xff;
+    if (addr < 0x2000) {
+      this.cpuRAM[addr & 0x7ff] = val;
+      return;
+    }
+    if (addr < 0x4000) {
+      this.ppu.cpuWrite(0x2000 + (addr & 7), val);
+      return;
+    }
+    if (addr === 0x4014) {
+      const base = val << 8;
+      this.cpu.cycles += this.cpu.cycles & 1 ? 514 : 513;
+      for (let i = 0; i < 256; i++) {
+        this.ppu.oam[i] = this.cpuRead(base + i);
       }
+      return;
+    }
+    if (addr === 0x4016) {
+      this.ctrl1.write(val);
+      this.ctrl2.write(val);
+      return;
+    }
+    if (addr >= 0x6000 && addr < 0x8000) {
+      this.mapper.cpuWrite(addr, val);
+      return;
+    }
+    if (addr >= 0x8000) {
+      this.mapper.cpuWrite(addr, val);
+      return;
+    }
+  }
+
+  cartCHRRead(addr) {
+    return this.mapper.ppuRead(addr);
+  }
+  
+  cartCHRWrite(addr, val) {
+    this.mapper.ppuWrite(addr, val);
+  }
+  
+  ntMirror(addr) {
+    const a = (addr - 0x2000) & 0x0fff;
+    const table = (a >> 10) & 3;
+    const offset = a & 0x03ff;
+    const m = this.mapper.mirroring();
+    const map = m === 0 ? [0, 0, 1, 1] : [0, 1, 0, 1];
+    return map[table] * 0x400 + offset;
+  }
+  
+  requestNMI() {
+    this.nmiLine = true;
+  }
+  
+  takeNMI() {
+    if (this.nmiLine) {
+      this.nmiLine = false;
+      return true;
+    }
+    return false;
+  }
+  
+  requestIRQ() {
+    this.irqLine = true;
+  }
+  
+  takeIRQ() {
+    if (this.irqLine) {
+      this.irqLine = false;
+      return true;
+    }
+    return false;
+  }
+}
       // NESのボタン名とキーコードの対応
       const keyMapP1 = {
         KeyX: "A", // Aボタン
