@@ -1459,17 +1459,19 @@ class BackgroundUnit {
     
     const isRenderCycle = cycle >= 1 && cycle <= 256;
     const isPrefetchCycle = cycle >= 321 && cycle <= 336;
+ if (!isRenderLine) return;
 
-    if (!isRenderLine) return;
-    
-     if (scanline < 240 && cycle >= 1 && cycle <= 256) {
-  
-this.patternLo <<= 1;
-this.patternHi <<= 1;
-this.attrLo <<= 1;
-this.attrHi <<= 1;
-
+if (cycle >= 2 && cycle <= 257) {
+  this.patternLo <<= 1;
+  this.patternHi <<= 1;
+  this.attrLo <<= 1;
+  this.attrHi <<= 1;
 }
+
+
+   
+    
+     
     // タイル境界でフェッチ・ロード
     const cycleMod8 = cycle % 8;
     
@@ -1490,9 +1492,10 @@ this.attrHi <<= 1;
       case 0: // Reload shift registers
         this.reloadShiftRegisters();
         // Coarse X インクリメント
-        if (scanline < 240 && cycle <= 256) {
-  this.incrementX();
-}
+       // cycle % 8 === 0 のときだけ
+if ((cycle >= 8 && cycle <= 256) || cycle === 328 || cycle === 336) {
+            this.incrementX();
+          }
 
         break;
     }
@@ -1557,21 +1560,16 @@ if (cycle === 256) {
   }
 
   reloadShiftRegisters() {
- // 下位8ビットにロード
-    //this.patternLo = (this.patternLo & 0xFF00) | this.nextTileLo;
-    //this.patternHi = (this.patternHi & 0xFF00) | this.nextTileHi;
-    this.patternLo = (this.patternLo & 0x00FF) | (this.nextTileLo << 8);
-    this.patternHi = (this.patternHi & 0x00FF) | (this.nextTileHi << 8);
 
-    // 属性は1ビットを0x00または0xFFに拡張してロード
-    // これによりシフト時に常に現在のタイルのパレット情報を維持できる
-    const attrLoByte = (this.nextTileAttr & 1) ? 0xFF : 0x00;
-    const attrHiByte = (this.nextTileAttr & 2) ? 0xFF : 0x00;
-    
-    //this.attrLo = (this.attrLo & 0xFF00) | attrLoByte;
-    //this.attrHi = (this.attrHi & 0xFF00) | attrHiByte; 
-this.attrLo = (this.attrLo & 0x00FF) | ((this.nextTileAttr & 1) ? 0xFF00 : 0x0000);
-  this.attrHi = (this.attrHi & 0x00FF) | ((this.nextTileAttr & 2) ? 0xFF00 : 0x0000);
+// 上位バイト(0xFF00)を維持し、新しいデータを下位に入れる
+this.patternLo = (this.patternLo & 0xFF00) | this.nextTileLo;
+this.patternHi = (this.patternHi & 0xFF00) | this.nextTileHi;
+
+// 属性データも同様に下位へ
+const attrLoByte = (this.nextTileAttr & 1) ? 0xFF : 0x00;
+const attrHiByte = (this.nextTileAttr & 2) ? 0xFF : 0x00;
+this.attrLo = (this.attrLo & 0xFF00) | attrLoByte;
+this.attrHi = (this.attrHi & 0xFF00) | attrHiByte;
 }  
 
 
@@ -1628,14 +1626,17 @@ this.attrLo = (this.attrLo & 0x00FF) | ((this.nextTileAttr & 1) ? 0xFF00 : 0x000
   }
 
   pixel() {
-const lo = (this.patternLo >> 15) & 1;
-  const hi = (this.patternHi >> 15) & 1;
-  const attrLo = (this.attrLo >> 15) & 1;
-  const attrHi = (this.attrHi >> 15) & 1;
-   
+const fineX = this.ppu.reg.x;
 
-    const paletteIndex = (hi << 1) | lo;
-    const paletteGroup = (attrHi << 1) | attrLo;
+  const bit = 15 - fineX;
+
+  const lo = (this.patternLo >> bit) & 1;
+  const hi = (this.patternHi >> bit) & 1;
+  const attrLo = (this.attrLo >> bit) & 1;
+  const attrHi = (this.attrHi >> bit) & 1;
+
+  const paletteIndex = (hi << 1) | lo;
+  const paletteGroup = (attrHi << 1) | attrLo;
     
     // 背景パレット: 0x00 (universal bg), 0x01-0x03, 0x05-0x07, ...
     const colorIndex = paletteIndex === 0 ? 0 : (paletteGroup * 4 + paletteIndex);
