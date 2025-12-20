@@ -1461,11 +1461,8 @@ class BackgroundUnit {
     const isPrefetchCycle = cycle >= 321 && cycle <= 336;
 
     if (!isRenderLine) return;
-    if (!isRenderCycle && !isPrefetchCycle) return;
-
-    // レンダリング無効時はスキップ
-    if ((reg.PPUMASK & 0x18) === 0) return;
-
+    
+    
     // タイル境界でフェッチ・ロード
     const cycleMod8 = cycle % 8;
     
@@ -1493,7 +1490,7 @@ class BackgroundUnit {
     }
 
     // シフトレジスタを左シフト (描画サイクル中のみ)
-   if (scanline < 240 && cycle >= 2 && cycle <= 256) {
+   if (scanline < 240 && cycle >= 1 && cycle <= 256) {
   this.patternLo <<= 1;
   this.patternHi <<= 1;
   this.attrLo <<= 1;
@@ -1502,14 +1499,14 @@ class BackgroundUnit {
 
     // Copy horizontal bits at cycle 257
    // copyX は pre-render でも必要
-if (cycle === 257 && (scanline < 240 || scanline === 261)) {
+if (cycle === 257) {
   this.copyX();
 }
 
 
     // Increment Y at cycle 256
     // Increment Y at cycle 256 (visible scanlines only)
-if (cycle === 256 && scanline < 240) {
+if (cycle === 256) {
   this.incrementY();
 }
 
@@ -1557,14 +1554,18 @@ if (cycle === 256 && scanline < 240) {
   }
 
   reloadShiftRegisters() {
-    // 下位8ビットに新しいタイルデータをロード
+ // 下位8ビットにロード
     this.patternLo = (this.patternLo & 0xFF00) | this.nextTileLo;
     this.patternHi = (this.patternHi & 0xFF00) | this.nextTileHi;
     
-    // 属性ビットを8ピクセル分展開
-    this.attrLo = (this.attrLo & 0xFF00) | ((this.nextTileAttr & 1) ? 0xFF : 0x00);
-    this.attrHi = (this.attrHi & 0xFF00) | ((this.nextTileAttr & 2) ? 0xFF : 0x00);
-  }
+    // 属性は1ビットを0x00または0xFFに拡張してロード
+    // これによりシフト時に常に現在のタイルのパレット情報を維持できる
+    const attrLoByte = (this.nextTileAttr & 1) ? 0xFF : 0x00;
+    const attrHiByte = (this.nextTileAttr & 2) ? 0xFF : 0x00;
+    
+    this.attrLo = (this.attrLo & 0xFF00) | attrLoByte;
+    this.attrHi = (this.attrHi & 0xFF00) | attrHiByte;   
+}
 
   incrementX() {
     const reg = this.ppu.reg;
