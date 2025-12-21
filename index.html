@@ -3616,7 +3616,55 @@ this.bus.apu.step();
         status.textContent = `Loaded: ${f.name} (${romBytes.length} bytes)`;
         startBtn.disabled = false;
       });
+       
+const BUTTON_MAP = {
+  0: "A",
+  1: "B",
+  8: "Select",
+  9: "Start",
+};
 
+let prevButtons = [];
+let prevAxes = [0, 0];
+
+function handlePadInput(pad) {
+  // ボタン
+  pad.buttons.forEach((btn, index) => {
+    const nesBtn = BUTTON_MAP[index];
+    if (nesBtn !== undefined) {
+      if (btn.pressed && !prevButtons[index]) {
+        
+        buttonsP1[nesBtn] = true;
+          nes.bus.ctrl1.setButtons(buttonsP1);
+      } else if (!btn.pressed && prevButtons[index]) {
+
+       
+        buttonsP1[nesBtn] = false;
+          nes.bus.ctrl1.setButtons(buttonsP1);
+      }
+    }
+  });
+
+  // 十字キー（axes）
+  const [axX, axY] = pad.axes;
+
+  // 左右
+  if (axX < -0.5 && prevAxes[0] >= -0.5) {buttonsP1["Left"] = true;nes.bus.ctrl1.setButtons(buttonsP1);}
+  if (axX >= -0.5 && prevAxes[0] < -0.5) {buttonsP1["Left"] = false;nes.bus.ctrl1.setButtons(buttonsP1);}
+
+  if (axX > 0.5 && prevAxes[0] <= 0.5) {buttonsP1["Right"] = true;nes.bus.ctrl1.setButtons(buttonsP1);}
+  if (axX <= 0.5 && prevAxes[0] > 0.5) {buttonsP1["Right"] = false;nes.bus.ctrl1.setButtons(buttonsP1);}
+
+  // 上下
+  if (axY < -0.5 && prevAxes[1] >= -0.5) {buttonsP1["Up"] = true;nes.bus.ctrl1.setButtons(buttonsP1);}
+  if (axY >= -0.5 && prevAxes[1] < -0.5) {buttonsP1["Up"] = false;nes.bus.ctrl1.setButtons(buttonsP1);}
+
+  if (axY > 0.5 && prevAxes[1] <= 0.5) {buttonsP1["Down"] = true;nes.bus.ctrl1.setButtons(buttonsP1);}
+  if (axY <= 0.5 && prevAxes[1] > 0.5) {buttonsP1["Down"] = false;nes.bus.ctrl1.setButtons(buttonsP1);}
+
+  prevButtons = pad.buttons.map(b => b.pressed);
+  prevAxes = [axX, axY];
+}
       let lastTime = performance.now();
       let frames = 0,
         lastFpsTime = lastTime;
