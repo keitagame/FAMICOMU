@@ -3629,6 +3629,7 @@ let prevAxes = [0, 0];
 
 function handlePadInput(pad) {
   // ボタン
+  console.log("AAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
   pad.buttons.forEach((btn, index) => {
     const nesBtn = BUTTON_MAP[index];
     if (nesBtn !== undefined) {
@@ -3693,7 +3694,10 @@ function handlePadInput(pad) {
           status.textContent = "Stopped: " + e.message;
           return;
         }
-
+const pads = navigator.getGamepads();
+  if (pads[0]) {
+    handlePadInput(pads[0]);
+  }
         const imageData = ctx.createImageData(256, 240);
         const data = imageData.data;
         const fb = nes.ppu.framebuffer;
