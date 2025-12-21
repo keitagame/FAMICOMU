@@ -9,11 +9,22 @@
        :root {
         color-scheme: light dark;
       }
+      @font-face {
+  font-family: "Renner";
+  src: url("./Renner.ttf") format("truetype");
+  font-display: swap;
+ 
+}
       body {
         background:rgb(0, 0, 0);
-        font-family: ui-sans-serif, system-ui;
-        margin: 16px;
+       font-family: "Renner", sans-serif;
+        margin: 0;
+        padding:0;
       }
+h1{
+font-weight:300;
+font-size:25px;
+}
       header {
         display: flex;
         gap: 12px;
@@ -37,7 +48,7 @@ justify-content: center;
         align-items: center;
       }
       .mono {
-        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+       font-size:20px; 
       }
       small {
         opacity: 0.7;
@@ -46,17 +57,36 @@ justify-content: center;
 display:none;
 }
 button{
+font-family: "Renner", sans-serif;
 padding:10px;
 background:rgb(0, 0, 0);
 color:rgb(255, 255, 255);
 border:1px solid rgb(255, 255, 255);
 }
+.file-input {
+  display: none; /* 本体は隠す */
+}
+
+.file-label {
+  display: inline-block;
+  padding: 10px 16px;
+  background: #000000;
+  color: white;
+    border:1px solid white;
+  border-radius: 0px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background 0.2s;
+}
+
+
 
     </style>
   </head>
   <body>
    
     <header>
+<h1>FAMICOMU</h1>
       <select id="romSelect">
   <option value="">-- サーバーROMを選択 --</option>
   <option value="snow.nes">snow.nes</option>
@@ -64,12 +94,18 @@ border:1px solid rgb(255, 255, 255);
   <option value="roms/sw.nes">sw.nes</option>
   <option value="roms/bs.nes">bs.nes</option>
 </select>
-      <input id="rom" type="file" accept=".nes" />
+<label class="file-label">
+  Select
+  <input id="rom" type="file" class="file-input">
+</label>
+<span id="file-name"></span>
+
+      
       <button id="fullscreenBtn">Fullscreen</button>
 
       <button id="start" disabled>Start</button>
       <div class="mono" id="status">No ROM</div>
-      <input type="text" id="myInput" value="30" />
+      <div><span class="mono">CPU PC:</span> <span id="pc" class="mono">0x0000</span></div>
     </header>
     <div class="row">
       <canvas id="screen" width="256" height="240"></canvas>
@@ -2255,10 +2291,9 @@ class CPU {
 
   // One CPU step = execute one opcode
   step() {
-    this.cycles = 0;
+    
     // Handle pending interrupts
-    if (this.bus.takeNMI()) this.nmi();
-    else if (this.bus.takeIRQ()) this.irq();
+   this.cycles=0;
 
     const op = this.fetch();
     const entry = this.opcodes[op];
@@ -2270,7 +2305,8 @@ class CPU {
     
     const cycleBefore = this.cycles;
     entry.call(this);
-    
+     if (this.bus.takeNMI()) this.nmi();
+    else if (this.bus.takeIRQ()) this.irq();
     // cycTable からベースサイクルを加算（命令内で追加サイクルが加算済み）
     const baseCycles = this.cycTable[op];
     const extraCycles = this.cycles - cycleBefore;
@@ -2572,20 +2608,22 @@ class CPU {
 
     // === BRK ===
     t[0x00] = function() {
-      this.fetch(); // padding
-      this.push((this.PC >> 8) & 0xff);
-      this.push(this.PC & 0xff);
-      this.push(this.P | 0x10);
-      this.setI(1);
-      this.PC = this.read16(0xfffe);
-    };
+  this.fetch(); // padding
+  const pc = (this.PC + 1) & 0xffff;
+  this.push((pc >> 8) & 0xff);
+  this.push(pc & 0xff);
+  this.push(this.P | 0x10);
+  this.setI(1);
+  this.PC = this.read16(0xfffe);
+};
+
 
     // === NOP ===
     t[0xea] = function() { /* NOP */ };
 
     // Fill undefined opcodes with NOP
     for (let i = 0; i < 256; i++) {
-      if (!t[i]) t[i] = function() { console.log("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); };
+      if (!t[i]) t[i] = function() { };
     }
 
     return t;
@@ -3312,11 +3350,12 @@ class Bus {
     addr &= 0xffff;
     if (addr < 0x2000) return this.cpuRAM[addr & 0x7ff];
     if (addr < 0x4000) return this.ppu.cpuRead(0x2000 + (addr & 7));
+ if (addr >= 0x4000 && addr <= 0x4015) return this.apu.read(addr);
     if (addr === 0x4016) return this.ctrl1.read();
-    if (addr === 0x4017) return this.ctrl2.read();
+    if (addr === 0x4017) return this.apu.read(addr); // ←超重要;
     if (addr >= 0x6000 && addr < 0x8000) return this.mapper.cpuRead(addr);
     if (addr >= 0x8000) return this.mapper.cpuRead(addr);
-    if (addr >= 0x4000 && addr <= 0x4015) return this.apu.read(addr);
+   
     return 0;
   }
 
@@ -3394,18 +3433,15 @@ class Bus {
     }
     return false;
   }
-  
+  takeIRQ() {
+  return this.irqLine;
+}
+
   requestIRQ() {
     this.irqLine = true;
   }
   
-  takeIRQ() {
-    if (this.irqLine) {
-      this.irqLine = false;
-      return true;
-    }
-    return false;
-  }
+ 
 }
       // NESのボタン名とキーコードの対応
       const keyMapP1 = {
@@ -3445,6 +3481,9 @@ class Bus {
           e.preventDefault();
         }
       });
+let stepCount = 0;
+let lastPC = -1;
+let sameCount = 0;
       const font8x8 = {
         A: [0x18, 0x24, 0x42, 0x7e, 0x42, 0x42, 0x42, 0x00],
         " ": [0, 0, 0, 0, 0, 0, 0, 0], // 空白
@@ -3533,8 +3572,23 @@ class Bus {
           this.cpu.reset();
           //this.ppu.reset();
         }
+
         // === NES.stepFrame の安全化（step を二回呼んでいる箇所を修正、PC 繰り返し検出を追加） ===
         stepFrame() {
+            const pc = this.cpu.PC;
+    
+    // 無限ループ検出
+    if (pc === lastPC) {
+      sameCount++;
+      if (sameCount > 1000) {
+        console.error(`Stuck at PC=$${pc.toString(16).padStart(4, '0')}`);
+        console.error(`A=$${cpu.A.toString(16)} X=$${cpu.X.toString(16)} Y=$${cpu.Y.toString(16)}`);
+        return; // 停止
+      }
+    } else {
+      lastPC = pc;
+      sameCount = 0;
+    }
   let guard = 0;
 if (!this.ppu.consumeFrameFlag()) console.log("frame");
 
@@ -3543,12 +3597,12 @@ if (!this.ppu.consumeFrameFlag()) console.log("frame");
     
     for(let i = 0; i < cpuCycles; i++){
 this.bus.apu.step();
+this.ppu.step();
+this.ppu.step();
+this.ppu.step();
 }
     // NES: CPU 1 cycle = PPU 3 cycles
-    for (let i = 0; i < cpuCycles * 3; i++) {
-        
-      this.ppu.step();
-    }
+    
 
     if (++guard > 10_000_000) {
       throw new Error("Frame step guard overflow");
@@ -3613,7 +3667,7 @@ this.bus.apu.step();
         if (!f) return;
         const buf = await f.arrayBuffer();
         romBytes = new Uint8Array(buf);
-        status.textContent = `Loaded: ${f.name} (${romBytes.length} bytes)`;
+        status.textContent = `Loaded`;
         startBtn.disabled = false;
       });
        
@@ -3629,7 +3683,7 @@ let prevAxes = [0, 0];
 
 function handlePadInput(pad) {
   // ボタン
-  console.log("AAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+  
   pad.buttons.forEach((btn, index) => {
     const nesBtn = BUTTON_MAP[index];
     if (nesBtn !== undefined) {
@@ -3701,7 +3755,7 @@ const pads = navigator.getGamepads();
         const imageData = ctx.createImageData(256, 240);
         const data = imageData.data;
         const fb = nes.ppu.framebuffer;
-
+document.getElementById("pc").textContent = "0x"+nes.cpu.PC.toString(16)
         for (let i = 0; i < fb.length; i++) {
           const color = fb[i] >>> 0; // 符号付きシフトを避ける
           const offset = i * 4;
