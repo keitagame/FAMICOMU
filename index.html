@@ -1437,7 +1437,7 @@ class PPURegisters {
   constructor() {
     this.PPUCTRL = 0;
     this.PPUMASK = 0;
-    this.PPUSTATUS = 0xa0;
+    this.PPUSTATUS = 0x00;
     this.OAMADDR = 0;
 
     // スクロール関連レジスタ
@@ -1807,9 +1807,9 @@ class PPUTiming {
  
 
   if (this.scanline === 261 && this.cycle === 1) {
-    reg.setVBlank(false);
-    reg.PPUSTATUS &= ~0x40;
-    reg.PPUSTATUS &= ~0x20;
+    //reg.setVBlank(false);
+    //reg.PPUSTATUS &= ~0x40;
+    //reg.PPUSTATUS &= ~0x20;
   }
 
   // ---- advance cycle ----
@@ -1930,11 +1930,14 @@ class PPU {
 
   cpuRead(addr) {
     switch (addr & 0x7) {
+       
+ 
       case 2: { // PPUSTATUS ($2002)
         const status = this.reg.PPUSTATUS;
-        this.reg.PPUSTATUS &= 0x7F; // VBlank フラグクリア
-        this.reg.w = 0;              // 書き込みトグルリセット
-        return status;
+  this.reg.PPUSTATUS &= ~0x80;
+  this.reg.w = 0;
+  return status;
+       
       }
       case 4: // OAMDATA ($2004)
         return this.oam[this.reg.OAMADDR];
@@ -3638,8 +3641,7 @@ this.ppu.step();
         if (!f) return;
         const buf = await f.arrayBuffer();
         romBytes = new Uint8Array(buf);
-const base64 = uint8ArrayToBase64(romBytes); const urlSafe = toUrlSafeBase64(base64); const url = new URL(location.href); url.searchParams.set("data", urlSafe);
-history.replaceState(null, "", url);5
+
         status.textContent = `Loaded`;
         startBtn.disabled = false;
       });
@@ -3725,10 +3727,7 @@ function toUrlSafeBase64(base64) {
 
       startBtn.addEventListener("click", () => {
         try {
-          const params = new URLSearchParams(location.search);
-const base64 = params.get("data"); // ?data=xxxx の部分
-const fixedBase64 = decodeUrlSafeBase64(base64);
-          romBytes = base64ToUint8Array(fixedBase64);
+          
           nes = new NES();
 
           nes.loadCartridge(romBytes);
@@ -3791,7 +3790,7 @@ document.getElementById("pc").textContent = "0x"+nes.cpu.PC.toString(16)
         
         
 
-        requestAnimationFrame(loop);
+        setTimeout(loop);
       }
     </script>
   </body>
