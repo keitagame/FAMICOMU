@@ -103,7 +103,7 @@ border:1px solid rgb(255, 255, 255);
       
       <button id="fullscreenBtn">Fullscreen</button>
 
-      <button id="start" disabled>Start</button>
+      <button id="start">Start</button>
       <div class="mono" id="status">No ROM</div>
       <div><span class="mono">CPU PC:</span> <span id="pc" class="mono">0x0000</span></div>
     </header>
@@ -1424,38 +1424,12 @@ class Mapper0 extends IMapper {
           // After Cartridge.parse or after load
 
           // デバッグ: 切り出し確認
-          console.log(
-            "[Cartridge] NES2:",
-            nes2,
-            "mapper:",
-            this.mapper,
-            "sub:",
-            this.submapper
-          );
-          console.log(
-            "[Cartridge] PRG size:",
-            this.prg.length,
-            "CHR size:",
-            this.chr.length,
-            "trainer:",
-            hasTrainer,
-            "mirror:",
-            this.mirror ? "V" : "H"
-          );
-          console.log(
-            "[Cartridge] PRG first 16:",
-            Array.from(this.prg.slice(0, 16))
-          );
-          console.log(
-            "[Cartridge] CHR first 16:",
-            Array.from(this.chr.slice(0, 16))
-          );
+         
 
           // サポートマッパの判定
           this.valid = [0, 1, 2, 3, 4].includes(this.mapper);
           this.valid = true;
-          console.log("CHR size bytes:", this.chr.length);
-          console.log("CHR first 16 bytes:", Array.from(this.chr.slice(0, 16)));
+         
         }
       }
 
@@ -1824,9 +1798,7 @@ class PPUTiming {
   }
 
   step(reg, bus) {
-    if (this.scanline === 241 && this.cycle === 0) console.log("VBlank");
-if (this.scanline === 241 && this.cycle === 1) console.log("NMI");
-
+   
     if (this.scanline === 241 && this.cycle === 1) {
     reg.setVBlank(true);
         if (reg.PPUCTRL & 0x80) bus.requestNMI();
@@ -3467,7 +3439,7 @@ class Bus {
       };
       window.addEventListener("keydown", (e) => {
         if (keyMapP1[e.code] !== undefined) {
-          console.log("a");
+          
           buttonsP1[keyMapP1[e.code]] = true;
           nes.bus.ctrl1.setButtons(buttonsP1);
           e.preventDefault(); // ブラウザのスクロール等を防ぐ
@@ -3564,10 +3536,9 @@ let sameCount = 0;
         loadCartridge(bytes) {
           const cart = new Cartridge(bytes);
 
-          console.log("Cartridge mapper =", cart.mapper, "valid =", cart.valid);
-          if (!cart.valid) throw new Error("Unsupported ROM");
+           if (!cart.valid) throw new Error("Unsupported ROM");
           this.bus.insertCartridge(cart);
-          console.log("Bus.mapper =", this.bus.mapper);
+         
           this.bus.apu.initAudio();
           this.cpu.reset();
           //this.ppu.reset();
@@ -3590,7 +3561,7 @@ let sameCount = 0;
       sameCount = 0;
     }
   let guard = 0;
-if (!this.ppu.consumeFrameFlag()) console.log("frame");
+
 
   while (!this.ppu.consumeFrameFlag()) {
     const cpuCycles = this.cpu.step(); // CPU が消費したサイクル数
@@ -3667,6 +3638,8 @@ this.ppu.step();
         if (!f) return;
         const buf = await f.arrayBuffer();
         romBytes = new Uint8Array(buf);
+const base64 = uint8ArrayToBase64(romBytes); const urlSafe = toUrlSafeBase64(base64); const url = new URL(location.href); url.searchParams.set("data", urlSafe);
+history.replaceState(null, "", url);5
         status.textContent = `Loaded`;
         startBtn.disabled = false;
       });
@@ -3723,9 +3696,39 @@ function handlePadInput(pad) {
       let lastTime = performance.now();
       let frames = 0,
         lastFpsTime = lastTime;
+function base64ToUint8Array(base64) {
+  const binary = atob(base64);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+function decodeUrlSafeBase64(str) { str = str.replace(/-/g, '+').replace(/_/g, '/'); const pad = str.length % 4; if (pad) { str += '='.repeat(4 - pad); } return str; }
+
+function uint8ArrayToBase64(bytes) {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+function toUrlSafeBase64(base64) {
+  return base64
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, ""); // パディング削除
+}
+
 
       startBtn.addEventListener("click", () => {
         try {
+          const params = new URLSearchParams(location.search);
+const base64 = params.get("data"); // ?data=xxxx の部分
+const fixedBase64 = decodeUrlSafeBase64(base64);
+          romBytes = base64ToUint8Array(fixedBase64);
           nes = new NES();
 
           nes.loadCartridge(romBytes);
@@ -3786,10 +3789,7 @@ document.getElementById("pc").textContent = "0x"+nes.cpu.PC.toString(16)
 
         
         
-        console.log(
-          "PPU $0000..$0010:",
-          [...Array(16)].map((_, i) => nes.ppu.ppuRead(i))
-        );
+        
 
         requestAnimationFrame(loop);
       }
