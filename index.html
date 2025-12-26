@@ -103,7 +103,7 @@ border:1px solid rgb(255, 255, 255);
       
       <button id="fullscreenBtn">Fullscreen</button>
 
-      <button id="start">Start</button>
+      <button id="start" disabled>Start</button>
       <div class="mono" id="status">No ROM</div>
       <div><span class="mono">CPU PC:</span> <span id="pc" class="mono">0x0000</span></div>
     </header>
@@ -1424,12 +1424,38 @@ class Mapper0 extends IMapper {
           // After Cartridge.parse or after load
 
           // デバッグ: 切り出し確認
-         
+          console.log(
+            "[Cartridge] NES2:",
+            nes2,
+            "mapper:",
+            this.mapper,
+            "sub:",
+            this.submapper
+          );
+          console.log(
+            "[Cartridge] PRG size:",
+            this.prg.length,
+            "CHR size:",
+            this.chr.length,
+            "trainer:",
+            hasTrainer,
+            "mirror:",
+            this.mirror ? "V" : "H"
+          );
+          console.log(
+            "[Cartridge] PRG first 16:",
+            Array.from(this.prg.slice(0, 16))
+          );
+          console.log(
+            "[Cartridge] CHR first 16:",
+            Array.from(this.chr.slice(0, 16))
+          );
 
           // サポートマッパの判定
           this.valid = [0, 1, 2, 3, 4].includes(this.mapper);
           this.valid = true;
-         
+          console.log("CHR size bytes:", this.chr.length);
+          console.log("CHR first 16 bytes:", Array.from(this.chr.slice(0, 16)));
         }
       }
 
@@ -1437,7 +1463,7 @@ class PPURegisters {
   constructor() {
     this.PPUCTRL = 0;
     this.PPUMASK = 0;
-    this.PPUSTATUS = 0x00;
+    this.PPUSTATUS = 0xa0;
     this.OAMADDR = 0;
 
     // スクロール関連レジスタ
@@ -1491,6 +1517,7 @@ const isPreRenderLine = scanline === 261;
     const renderingEnabled = (reg.PPUMASK & 0x18) !== 0;
     
    //if (!renderingEnabled) return;
+
 
     // Visible + prefetch cycles
     const isFetchCycle = (cycle >= 1 && cycle <= 256) || (cycle >= 321 && cycle <= 336);
@@ -1798,7 +1825,9 @@ class PPUTiming {
   }
 
   step(reg, bus) {
-   
+    if (this.scanline === 241 && this.cycle === 0) console.log("VBlank");
+if (this.scanline === 241 && this.cycle === 1) console.log("NMI");
+
     if (this.scanline === 241 && this.cycle === 1) {
     reg.setVBlank(true);
         if (reg.PPUCTRL & 0x80) bus.requestNMI();
@@ -1807,9 +1836,9 @@ class PPUTiming {
  
 
   if (this.scanline === 261 && this.cycle === 1) {
-    //reg.setVBlank(false);
-    //reg.PPUSTATUS &= ~0x40;
-    //reg.PPUSTATUS &= ~0x20;
+    reg.setVBlank(false);
+    reg.PPUSTATUS &= ~0x40;
+    reg.PPUSTATUS &= ~0x20;
   }
 
   // ---- advance cycle ----
@@ -1930,14 +1959,11 @@ class PPU {
 
   cpuRead(addr) {
     switch (addr & 0x7) {
-       
- 
       case 2: { // PPUSTATUS ($2002)
         const status = this.reg.PPUSTATUS;
-  this.reg.PPUSTATUS &= ~0x80;
-  this.reg.w = 0;
-  return status;
-       
+        this.reg.PPUSTATUS &= 0x7F; // VBlank フラグクリア
+        this.reg.w = 0;              // 書き込みトグルリセット
+        return status;
       }
       case 4: // OAMDATA ($2004)
         return this.oam[this.reg.OAMADDR];
@@ -2266,9 +2292,11 @@ class CPU {
 
   // One CPU step = execute one opcode
   step() {
-    
+ 
+ const before = this.cycles;
+
     // Handle pending interrupts
-   this.cycles=0;
+   
 
     const op = this.fetch();
     const entry = this.opcodes[op];
@@ -2283,10 +2311,10 @@ class CPU {
      if (this.bus.takeNMI()) this.nmi();
     else if (this.bus.takeIRQ()) this.irq();
     // cycTable からベースサイクルを加算（命令内で追加サイクルが加算済み）
-    const baseCycles = this.cycTable[op];
-    const extraCycles = this.cycles - cycleBefore;
-    this.cycles = cycleBefore + baseCycles + extraCycles;
-    return this.cycles;
+    const used = this.cycTable[op];
+  this.cycles += used;
+
+  return used; // ← ここが超重要
   }
 
   buildOpcodeTable() {
@@ -2325,18 +2353,19 @@ class CPU {
     };
 
     // Branch helper
-    const BR = (cond) => {
-      const off = this.rel();
-      if (cond) {
-        const oldPC = this.PC;
-        this.PC = (this.PC + off) & 0xffff;
-        this.cycles++; // 分岐成功で+1
-        // ページクロスでさらに+1
-        if ((oldPC & 0xff00) !== (this.PC & 0xff00)) {
-          this.cycles++;
-        }
-      }
-    };
+   const BR = (cond) => {
+  const off = this.rel();
+  if (cond) {
+    const base = this.PC; // ← offset fetch 後の PC
+    const dest = (base + off) & 0xffff;
+    if ((base & 0xff00) !== (dest & 0xff00)) {
+      this.cycles++;
+    }
+    this.PC = dest;
+    this.cycles++;
+  }
+};
+
 
     // BIT instruction
     const BIT = (m) => {
@@ -2580,18 +2609,15 @@ class CPU {
     t[0xb8] = function() { this.setV(0); }; // CLV
     t[0xd8] = function() { this.setD(0); }; // CLD
     t[0xf8] = function() { this.setD(1); }; // SED
-
-    // === BRK ===
-    t[0x00] = function() {
-  this.fetch(); // padding
-  const pc = (this.PC + 1) & 0xffff;
+t[0x00] = function() {
+  this.fetch(); // padding byte (PC already incremented)
+  const pc = this.PC; // ← これが正解
   this.push((pc >> 8) & 0xff);
   this.push(pc & 0xff);
   this.push(this.P | 0x10);
   this.setI(1);
   this.PC = this.read16(0xfffe);
 };
-
 
     // === NOP ===
     t[0xea] = function() { /* NOP */ };
@@ -3442,7 +3468,7 @@ class Bus {
       };
       window.addEventListener("keydown", (e) => {
         if (keyMapP1[e.code] !== undefined) {
-          
+          console.log("a");
           buttonsP1[keyMapP1[e.code]] = true;
           nes.bus.ctrl1.setButtons(buttonsP1);
           e.preventDefault(); // ブラウザのスクロール等を防ぐ
@@ -3539,9 +3565,10 @@ let sameCount = 0;
         loadCartridge(bytes) {
           const cart = new Cartridge(bytes);
 
-           if (!cart.valid) throw new Error("Unsupported ROM");
+          console.log("Cartridge mapper =", cart.mapper, "valid =", cart.valid);
+          if (!cart.valid) throw new Error("Unsupported ROM");
           this.bus.insertCartridge(cart);
-         
+          console.log("Bus.mapper =", this.bus.mapper);
           this.bus.apu.initAudio();
           this.cpu.reset();
           //this.ppu.reset();
@@ -3564,7 +3591,7 @@ let sameCount = 0;
       sameCount = 0;
     }
   let guard = 0;
-
+if (!this.ppu.consumeFrameFlag()) console.log("frame");
 
   while (!this.ppu.consumeFrameFlag()) {
     const cpuCycles = this.cpu.step(); // CPU が消費したサイクル数
@@ -3641,7 +3668,6 @@ this.ppu.step();
         if (!f) return;
         const buf = await f.arrayBuffer();
         romBytes = new Uint8Array(buf);
-
         status.textContent = `Loaded`;
         startBtn.disabled = false;
       });
@@ -3698,36 +3724,9 @@ function handlePadInput(pad) {
       let lastTime = performance.now();
       let frames = 0,
         lastFpsTime = lastTime;
-function base64ToUint8Array(base64) {
-  const binary = atob(base64);
-  const len = binary.length;
-  const bytes = new Uint8Array(len);
-
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
-}
-function decodeUrlSafeBase64(str) { str = str.replace(/-/g, '+').replace(/_/g, '/'); const pad = str.length % 4; if (pad) { str += '='.repeat(4 - pad); } return str; }
-
-function uint8ArrayToBase64(bytes) {
-  let binary = "";
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
-}
-function toUrlSafeBase64(base64) {
-  return base64
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, ""); // パディング削除
-}
-
 
       startBtn.addEventListener("click", () => {
         try {
-          
           nes = new NES();
 
           nes.loadCartridge(romBytes);
@@ -3788,9 +3787,12 @@ document.getElementById("pc").textContent = "0x"+nes.cpu.PC.toString(16)
 
         
         
-        
+        console.log(
+          "PPU $0000..$0010:",
+          [...Array(16)].map((_, i) => nes.ppu.ppuRead(i))
+        );
 
-        setTimeout(loop);
+        requestAnimationFrame(loop);
       }
     </script>
   </body>
