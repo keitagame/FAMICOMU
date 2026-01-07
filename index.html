@@ -1739,7 +1739,7 @@ class SpriteUnit {
           y: y,
           tile: this.ppu.oam[i * 4 + 1],
           attr: this.ppu.oam[i * 4 + 2],
-          x: this.ppu.oam[i * 4 + 3]
+          x: this.ppu.oam[i * 4 + 3]-1
         });
         
         if (this.secondaryOAM.length >= 8) {
