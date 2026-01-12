@@ -176,13 +176,59 @@ border:1px solid rgb(255, 255, 255);
       }
 
       const MapperRegistry = {
-        0: (cart, bus) => new Mapper0(cart, bus),
-        1: (cart, bus) => new Mapper1(cart, bus),
-        2: (cart, bus) => new Mapper2(cart, bus),
-        3: (cart, bus) => new Mapper3(cart, bus),
-        4: (cart, bus) => new Mapper4(cart, bus), // MMC3
-        
-      };
+  0: (cart, bus) => new Mapper0(cart, bus),
+  1: (cart, bus) => new Mapper1(cart, bus),
+  2: (cart, bus) => new Mapper2(cart, bus),
+  3: (cart, bus) => new Mapper3(cart, bus),
+  4: (cart, bus) => new Mapper4(cart, bus),
+  5: (cart, bus) => new Mapper5(cart, bus),   // MMC5
+  7: (cart, bus) => new Mapper7(cart, bus),
+  9: (cart, bus) => new Mapper9(cart, bus),
+  10: (cart, bus) => new Mapper10(cart, bus),
+  11: (cart, bus) => new Mapper11(cart, bus),
+  13: (cart, bus) => new Mapper13(cart, bus),
+  15: (cart, bus) => new Mapper15(cart, bus),
+  16: (cart, bus) => new Mapper16(cart, bus),
+  18: (cart, bus) => new Mapper18(cart, bus),
+  19: (cart, bus) => new Mapper19(cart, bus),  // Namco 163
+  21: (cart, bus) => new Mapper21(cart, bus),  // VRC4a
+  22: (cart, bus) => new Mapper22(cart, bus),  // VRC2a
+  23: (cart, bus) => new Mapper23(cart, bus),  // VRC2b/4e
+  24: (cart, bus) => new Mapper24(cart, bus),  // VRC6a
+  25: (cart, bus) => new Mapper25(cart, bus),  // VRC4b/d
+  26: (cart, bus) => new Mapper26(cart, bus),  // VRC6b
+  30: (cart, bus) => new Mapper30(cart, bus),
+  34: (cart, bus) => new Mapper34(cart, bus),
+  66: (cart, bus) => new Mapper66(cart, bus),
+  69: (cart, bus) => new Mapper69(cart, bus),  // FME-7
+  71: (cart, bus) => new Mapper71(cart, bus),
+  73: (cart, bus) => new Mapper73(cart, bus),  // VRC3
+  75: (cart, bus) => new Mapper75(cart, bus),
+  76: (cart, bus) => new Mapper76(cart, bus),
+  78: (cart, bus) => new Mapper78(cart, bus),
+  79: (cart, bus) => new Mapper79(cart, bus),
+  85: (cart, bus) => new Mapper85(cart, bus),  // VRC7
+  86: (cart, bus) => new Mapper86(cart, bus),
+  87: (cart, bus) => new Mapper87(cart, bus),
+  88: (cart, bus) => new Mapper88(cart, bus),
+  89: (cart, bus) => new Mapper89(cart, bus),
+  93: (cart, bus) => new Mapper93(cart, bus),
+  94: (cart, bus) => new Mapper94(cart, bus),
+  95: (cart, bus) => new Mapper95(cart, bus),
+  97: (cart, bus) => new Mapper97(cart, bus),
+  105: (cart, bus) => new Mapper105(cart, bus),
+  113: (cart, bus) => new Mapper113(cart, bus),
+  115: (cart, bus) => new Mapper115(cart, bus),
+  118: (cart, bus) => new Mapper118(cart, bus),
+  119: (cart, bus) => new Mapper119(cart, bus),
+  144: (cart, bus) => new Mapper144(cart, bus),
+  148: (cart, bus) => new Mapper148(cart, bus),
+  180: (cart, bus) => new Mapper180(cart, bus),
+  184: (cart, bus) => new Mapper184(cart, bus),
+  185: (cart, bus) => new Mapper185(cart, bus),
+  206: (cart, bus) => new Mapper206(cart, bus),
+  228: (cart, bus) => new Mapper228(cart, bus),
+};
 
       function createMapper(cart, bus) {
         const ctor = MapperRegistry[cart.mapper];
@@ -295,107 +341,120 @@ class Mapper0 extends IMapper {
         }
       }
       class Mapper1 extends IMapper {
-        constructor(cart) {
-          super(cart);
-          this.prg = cart.prg;
-          this.chr = cart.chr || new Uint8Array(0x2000);
-          this.chrIsRAM = cart.chrIsRAM;
-          this.shift = 0x10; // bit4=1 means empty
-          this.ctrl = 0x0c; // default
-          this.chrBank0 = 0;
-          this.chrBank1 = 0;
-          this.prgBank = 0;
-        }
-        resetShift() {
-          this.shift = 0x10;
-        }
-        applyRegister(addr, data) {
-          const reg = (addr >> 13) & 3; // 0:ctrl,1:CHR0,2:CHR1,3:PRG
-          if (reg === 0) {
-            this.ctrl = data & 0x1f;
-          } else if (reg === 1) {
-            this.chrBank0 = data & 0x1f;
-          } else if (reg === 2) {
-            this.chrBank1 = data & 0x1f;
-          } else {
-            this.prgBank = data & 0x0f;
-          }
-        }
-        cpuWrite(addr, val) {
-          if (addr < 0x8000) return;
-          if (val & 0x80) {
-            // reset
-            this.resetShift();
-            this.ctrl |= 0x0c;
-            return;
-          }
-          const carry = val & 1;
-          if (this.shift & 1) {
-            // 5th bit
-            const data = ((this.shift >> 1) | (carry << 4)) & 0x1f;
-            this.applyRegister(addr, data);
-            this.resetShift();
-          } else {
-            this.shift = (carry << 4) | (this.shift >> 1);
-          }
-        }
-        cpuRead(addr) {
-          if (addr < 0x8000) return 0;
-          const prgMode = (this.ctrl >> 2) & 3;
-          const bankSize = prgMode >= 2 ? 0x4000 : 0x8000;
-          let bankIndex, base;
-          if (bankSize === 0x8000) {
-            bankIndex = (this.prgBank & 0x0e) >> 1;
-            base = bankIndex * 0x8000;
-            return this.prg[base + (addr - 0x8000)];
-          }
-          // 16Kモード
-          if (prgMode === 2) {
-            // first bank fixed at $8000
-            bankIndex = 0;
-            if (addr < 0xc000) base = 0;
-            else base = this.prgBank * 0x4000;
-          } else if (prgMode === 3) {
-            // last bank fixed at $C000
-            if (addr < 0xc000) base = this.prgBank * 0x4000;
-            else base = (this.prg.length / 0x4000 - 1) * 0x4000;
-          } else {
-            // prgMode 0/1 32K already handled
-            base = 0;
-          }
-          const off = addr & 0x3fff;
-          return this.prg[base + off];
-        }
-        ppuRead(addr) {
-          if (addr >= 0x2000) return 0;
-          const chrMode = (this.ctrl >> 4) & 1;
-          if (!chrMode) {
-            // 8KB
-            const base = (this.chrBank0 & 0x1e) * 0x1000;
-            return this.chr[base + addr];
-          } else {
-            // 4KB banks
-            if (addr < 0x1000) {
-              const base = this.chrBank0 * 0x1000;
-              return this.chr[base + addr];
-            } else {
-              const base = this.chrBank1 * 0x1000;
-              return this.chr[base + (addr - 0x1000)];
-            }
-          }
-        }
-        ppuWrite(addr, val) {
-          if (this.chrIsRAM && addr < 0x2000) this.chr[addr] = val;
-        }
-        mirroring() {
-          const m = this.ctrl & 3;
-          // 0:single lower,1:single upper,2:vertical,3:horizontal
-          if (m === 2) return 1;
-          if (m === 3) return 0;
-          // 単一ミラーはここではvertical扱いにフォールバック（簡略）
-          return 1;
-        }
+  constructor(cart, bus) {
+    super(cart, bus);
+
+    this.shiftReg = 0x10; // 10000b
+    this.writeCount = 0;
+
+    this.control = 0x0C; // PRG mode = 3
+    this.chrBank0 = 0;
+    this.chrBank1 = 0;
+    this.prgBank = 0;
+  }
+
+  resetShift() {
+    this.shiftReg = 0x10;
+    this.writeCount = 0;
+  }
+
+  cpuWrite(addr, val) {
+    if (addr < 0x8000) return;
+
+    if (val & 0x80) {
+      // reset
+      this.resetShift();
+      this.control |= 0x0C;
+      return;
+    }
+
+    // shift in LSB
+    this.shiftReg = (this.shiftReg >> 1) | ((val & 1) << 4);
+    this.writeCount++;
+
+    if (this.writeCount === 5) {
+      const reg = (addr >> 13) & 3;
+      const data = this.shiftReg & 0x1F;
+
+      switch (reg) {
+        case 0:
+          this.control = data;
+          break;
+        case 1:
+          this.chrBank0 = data;
+          break;
+        case 2:
+          this.chrBank1 = data;
+          break;
+        case 3:
+          this.prgBank = data & 0x0F;
+          break;
       }
+      this.resetShift();
+    }
+  }
+
+  cpuRead(addr) {
+    if (addr < 0x8000) return 0;
+
+    const prgMode = (this.control >> 2) & 3;
+    const prgBanks = this.prg.length / 0x4000;
+    let bank = 0;
+    let offset = addr & 0x3FFF;
+
+    if (prgMode <= 1) {
+      // 32KB
+      bank = (this.prgBank & 0x0E);
+      return this.prg[(bank * 0x4000) + (addr - 0x8000)];
+    }
+
+    if (prgMode === 2) {
+      // $8000 fixed
+      bank = addr < 0xC000 ? 0 : this.prgBank;
+    } else {
+      // $C000 fixed
+      bank = addr < 0xC000 ? this.prgBank : (prgBanks - 1);
+    }
+
+    return this.prg[(bank * 0x4000) + offset];
+  }
+
+  ppuRead(addr) {
+    if (addr >= 0x2000) return 0;
+
+    const chrMode = (this.control >> 4) & 1;
+
+    if (!chrMode) {
+      // 8KB
+      const base = (this.chrBank0 & 0x1E) * 0x1000;
+      return this.chr[base + addr];
+    }
+
+    if (addr < 0x1000) {
+      const base = this.chrBank0 * 0x1000;
+      return this.chr[base + addr];
+    } else {
+      const base = this.chrBank1 * 0x1000;
+      return this.chr[base + (addr - 0x1000)];
+    }
+  }
+
+  ppuWrite(addr, val) {
+    if (this.chrIsRAM && addr < 0x2000) {
+      this.chr[addr] = val & 0xFF;
+    }
+  }
+
+  mirroring() {
+    switch (this.control & 3) {
+      case 0: return 2; // single-screen lower
+      case 1: return 3; // single-screen upper
+      case 2: return 1; // vertical
+      case 3: return 0; // horizontal
+    }
+  }
+}
+
       class Mapper4 {
         constructor(cart) {
           this.cart = cart;
@@ -1335,6 +1394,489 @@ class Mapper0 extends IMapper {
           }
         }
       }
+// MapperRegistryセクションを以下に置き換え：
+
+// 既存のMapper実装の後に以下を追加：
+
+// Mapper 5 (MMC5) - 基本実装
+class Mapper5 extends IMapper {
+  constructor(cart, bus) {
+    super(cart, bus);
+    this.prgMode = 3;
+    this.chrMode = 0;
+    this.prgBanks = [0, 0, 0, this.prg.length / 0x2000 - 1];
+    this.chrBanks = new Uint8Array(12);
+    this.exRAM = new Uint8Array(0x400);
+    this.ramMode = 0;
+  }
+  
+  cpuRead(addr) {
+    if (addr < 0x6000) return 0;
+    if (addr < 0x8000) return this.prgRAM[addr - 0x6000];
+    
+    const bank = (addr - 0x8000) >> 13;
+    const offset = addr & 0x1FFF;
+    const base = (this.prgBanks[bank] % (this.prg.length / 0x2000)) * 0x2000;
+    return this.prg[base + offset];
+  }
+  
+  cpuWrite(addr, val) {
+    val &= 0xFF;
+    if (addr >= 0x6000 && addr < 0x8000) {
+      this.prgRAM[addr - 0x6000] = val;
+      return;
+    }
+    if (addr === 0x5100) this.prgMode = val & 3;
+    else if (addr === 0x5101) this.chrMode = val & 3;
+    else if (addr >= 0x5114 && addr <= 0x5117) {
+      this.prgBanks[addr - 0x5114] = val;
+    } else if (addr >= 0x5120 && addr <= 0x512B) {
+      this.chrBanks[addr - 0x5120] = val;
+    }
+  }
+  
+  ppuRead(addr) {
+    if (addr < 0x2000) {
+      const bank = addr >> 10;
+      const base = (this.chrBanks[bank] % (this.chr.length / 0x400)) * 0x400;
+      return this.chr[base + (addr & 0x3FF)];
+    }
+    return 0;
+  }
+  
+  ppuWrite(addr, val) {
+    if (this.chrIsRAM && addr < 0x2000) this.chr[addr] = val & 0xFF;
+  }
+}
+
+// Mapper 11 (Color Dreams)
+class Mapper11 extends IMapper {
+  constructor(cart, bus) {
+    super(cart, bus);
+    this.prgBank = 0;
+    this.chrBank = 0;
+  }
+  
+  cpuRead(addr) {
+    if (addr < 0x8000) return 0;
+    const base = (this.prgBank % (this.prg.length / 0x8000)) * 0x8000;
+    return this.prg[base + (addr - 0x8000)];
+  }
+  
+  cpuWrite(addr, val) {
+    if (addr >= 0x8000) {
+      this.prgBank = val & 0x0F;
+      this.chrBank = (val >> 4) & 0x0F;
+    }
+  }
+  
+  ppuRead(addr) {
+    if (addr < 0x2000) {
+      const base = (this.chrBank % (this.chr.length / 0x2000)) * 0x2000;
+      return this.chr[base + addr];
+    }
+    return 0;
+  }
+  
+  ppuWrite(addr, val) {
+    if (this.chrIsRAM && addr < 0x2000) this.chr[addr] = val & 0xFF;
+  }
+}
+
+// Mapper 13 (CPROM)
+class Mapper13 extends IMapper {
+  constructor(cart, bus) {
+    super(cart, bus);
+    this.chrBank = 0;
+    this.chr = new Uint8Array(0x4000);
+    this.chrIsRAM = true;
+  }
+  
+  cpuRead(addr) {
+    if (addr < 0x8000) return 0;
+    return this.prg[addr - 0x8000];
+  }
+  
+  cpuWrite(addr, val) {
+    if (addr >= 0x8000) this.chrBank = val & 0x03;
+  }
+  
+  ppuRead(addr) {
+    if (addr < 0x2000) {
+      const base = this.chrBank * 0x1000;
+      return this.chr[base + (addr & 0xFFF)];
+    }
+    return 0;
+  }
+  
+  ppuWrite(addr, val) {
+    if (addr < 0x2000) {
+      const base = this.chrBank * 0x1000;
+      this.chr[base + (addr & 0xFFF)] = val & 0xFF;
+    }
+  }
+}
+
+// Mapper 15 (Multi-cart)
+class Mapper15 extends IMapper {
+  constructor(cart, bus) {
+    super(cart, bus);
+    this.prgBank = 0;
+    this.mode = 0;
+  }
+  
+  cpuRead(addr) {
+    if (addr < 0x8000) return 0;
+    const base = (this.prgBank % (this.prg.length / 0x4000)) * 0x4000;
+    if (this.mode === 2) {
+      return this.prg[(base * 2) + (addr - 0x8000)];
+    }
+    return this.prg[base + ((addr - 0x8000) & 0x3FFF)];
+  }
+  
+  cpuWrite(addr, val) {
+    if (addr >= 0x8000) {
+      this.prgBank = val & 0x3F;
+      this.mode = (val >> 6) & 3;
+      this.mirrorMode = (val & 0x40) ? 0 : 1;
+    }
+  }
+  
+  ppuRead(addr) {
+    if (addr < 0x2000) return this.chr[addr];
+    return 0;
+  }
+  
+  ppuWrite(addr, val) {
+    if (this.chrIsRAM && addr < 0x2000) this.chr[addr] = val & 0xFF;
+  }
+}
+
+// Mapper 16 (Bandai FCG)
+class Mapper16 extends IMapper {
+  constructor(cart, bus) {
+    super(cart, bus);
+    this.prgBank = 0;
+    this.chrBanks = new Uint8Array(8);
+  }
+  
+  cpuRead(addr) {
+    if (addr < 0x6000) return 0;
+    if (addr < 0x8000) return this.prgRAM[addr - 0x6000];
+    if (addr < 0xC000) {
+      const base = (this.prgBank % (this.prg.length / 0x4000)) * 0x4000;
+      return this.prg[base + (addr - 0x8000)];
+    }
+    const base = ((this.prg.length / 0x4000) - 1) * 0x4000;
+    return this.prg[base + (addr - 0xC000)];
+  }
+  
+  cpuWrite(addr, val) {
+    val &= 0xFF;
+    if (addr >= 0x6000 && addr < 0x8000) {
+      this.prgRAM[addr - 0x6000] = val;
+      return;
+    }
+    if (addr >= 0x8000) {
+      const reg = addr & 0x0F;
+      if (reg <= 7) this.chrBanks[reg] = val;
+      else if (reg === 8) this.prgBank = val & 0x0F;
+      else if (reg === 9) this.mirrorMode = val & 1 ? 0 : 1;
+    }
+  }
+  
+  ppuRead(addr) {
+    if (addr < 0x2000) {
+      const bank = addr >> 10;
+      const base = (this.chrBanks[bank] % (this.chr.length / 0x400)) * 0x400;
+      return this.chr[base + (addr & 0x3FF)];
+    }
+    return 0;
+  }
+  
+  ppuWrite(addr, val) {
+    if (this.chrIsRAM && addr < 0x2000) this.chr[addr] = val & 0xFF;
+  }
+}
+
+// Mapper 18 (Jaleco SS8806)
+class Mapper18 extends IMapper {
+  constructor(cart, bus) {
+    super(cart, bus);
+    this.prgBanks = [0, 1, this.prg.length / 0x2000 - 1];
+    this.chrBanks = new Uint8Array(8);
+  }
+  
+  cpuRead(addr) {
+    if (addr < 0x6000) return 0;
+    if (addr < 0x8000) return this.prgRAM[addr - 0x6000];
+    
+    const slot = (addr - 0x8000) >> 13;
+    const base = (this.prgBanks[slot] % (this.prg.length / 0x2000)) * 0x2000;
+    return this.prg[base + (addr & 0x1FFF)];
+  }
+  
+  cpuWrite(addr, val) {
+    val &= 0xFF;
+    if (addr >= 0x6000 && addr < 0x8000) {
+      this.prgRAM[addr - 0x6000] = val;
+      return;
+    }
+    if (addr >= 0x8000 && addr <= 0x8003) {
+      const slot = addr & 3;
+      if (slot < 3) this.prgBanks[slot] = val & 0x1F;
+    } else if (addr >= 0xA000 && addr <= 0xD003) {
+      const chrSlot = ((addr - 0xA000) >> 1) & 7;
+      this.chrBanks[chrSlot] = val;
+    }
+  }
+  
+  ppuRead(addr) {
+    if (addr < 0x2000) {
+      const bank = addr >> 10;
+      const base = (this.chrBanks[bank] % (this.chr.length / 0x400)) * 0x400;
+      return this.chr[base + (addr & 0x3FF)];
+    }
+    return 0;
+  }
+  
+  ppuWrite(addr, val) {
+    if (this.chrIsRAM && addr < 0x2000) this.chr[addr] = val & 0xFF;
+  }
+}
+
+// Mapper 19 (Namco 163) - 簡易版
+class Mapper19 extends IMapper {
+  constructor(cart, bus) {
+    super(cart, bus);
+    this.prgBanks = [0, 0, 0, this.prg.length / 0x2000 - 1];
+    this.chrBanks = new Uint8Array(8);
+    this.ntRAM = new Uint8Array(0x1000);
+  }
+  
+  cpuRead(addr) {
+    if (addr < 0x6000) return 0;
+    if (addr < 0x8000) return this.prgRAM[addr - 0x6000];
+    
+    const slot = (addr - 0x8000) >> 13;
+    const base = (this.prgBanks[slot] % (this.prg.length / 0x2000)) * 0x2000;
+    return this.prg[base + (addr & 0x1FFF)];
+  }
+  
+  cpuWrite(addr, val) {
+    val &= 0xFF;
+    if (addr >= 0x6000 && addr < 0x8000) {
+      this.prgRAM[addr - 0x6000] = val;
+      return;
+    }
+    if (addr >= 0x8000 && addr <= 0x87FF) {
+      this.chrBanks[(addr >> 8) & 7] = val;
+    } else if (addr >= 0xE000 && addr <= 0xE7FF) {
+      this.prgBanks[(addr >> 8) & 3] = val & 0x3F;
+    }
+  }
+  
+  ppuRead(addr) {
+    if (addr < 0x2000) {
+      const bank = addr >> 10;
+      const base = (this.chrBanks[bank] % (this.chr.length / 0x400)) * 0x400;
+      return this.chr[base + (addr & 0x3FF)];
+    }
+    return 0;
+  }
+  
+  ppuWrite(addr, val) {
+    if (this.chrIsRAM && addr < 0x2000) this.chr[addr] = val & 0xFF;
+  }
+}
+
+// Mapper 21/23/25 (VRC4/VRC2) - 統合簡易版
+class Mapper21 extends IMapper {
+  constructor(cart, bus) {
+    super(cart, bus);
+    this.prgBanks = [0, 0, (this.prg.length / 0x2000) - 1];
+    this.chrBanks = new Uint8Array(8);
+  }
+  
+  cpuRead(addr) {
+    if (addr < 0x6000) return 0;
+    if (addr < 0x8000) return this.prgRAM[addr - 0x6000];
+    if (addr < 0xA000) {
+      const base = (this.prgBanks[0] % (this.prg.length / 0x2000)) * 0x2000;
+      return this.prg[base + (addr - 0x8000)];
+    }
+    if (addr < 0xC000) {
+      const base = (this.prgBanks[1] % (this.prg.length / 0x2000)) * 0x2000;
+      return this.prg[base + (addr - 0xA000)];
+    }
+    const base = this.prgBanks[2] * 0x2000;
+    return this.prg[base + (addr - 0xC000)];
+  }
+  
+  cpuWrite(addr, val) {
+    val &= 0xFF;
+    if (addr >= 0x6000 && addr < 0x8000) {
+      this.prgRAM[addr - 0x6000] = val;
+      return;
+    }
+    if (addr >= 0x8000 && addr <= 0x8FFF) this.prgBanks[0] = val & 0x1F;
+    else if (addr >= 0xA000 && addr <= 0xAFFF) this.prgBanks[1] = val & 0x1F;
+    else if (addr >= 0xB000 && addr <= 0xEFFF) {
+      const chrReg = ((addr >> 12) - 0xB) * 2 + ((addr >> 1) & 1);
+      if (chrReg < 8) this.chrBanks[chrReg] = val;
+    } else if (addr >= 0x9000 && addr <= 0x9FFF) {
+      this.mirrorMode = val & 1;
+    }
+  }
+  
+  ppuRead(addr) {
+    if (addr < 0x2000) {
+      const bank = addr >> 10;
+      const base = (this.chrBanks[bank] % (this.chr.length / 0x400)) * 0x400;
+      return this.chr[base + (addr & 0x3FF)];
+    }
+    return 0;
+  }
+  
+  ppuWrite(addr, val) {
+    if (this.chrIsRAM && addr < 0x2000) this.chr[addr] = val & 0xFF;
+  }
+}
+
+class Mapper22 extends Mapper21 {} // VRC2a
+class Mapper23 extends Mapper21 {} // VRC2b/4e
+class Mapper25 extends Mapper21 {} // VRC4b/d
+
+// Mapper 24/26 (VRC6)
+class Mapper24 extends IMapper {
+  constructor(cart, bus) {
+    super(cart, bus);
+    this.prgBanks = [0, 0, (this.prg.length / 0x2000) - 1];
+    this.chrBanks = new Uint8Array(8);
+  }
+  
+  cpuRead(addr) {
+    if (addr < 0x6000) return 0;
+    if (addr < 0x8000) return this.prgRAM[addr - 0x6000];
+    
+    const slot = (addr < 0xC000) ? (addr < 0xA000 ? 0 : 1) : 2;
+    const base = (this.prgBanks[slot] % (this.prg.length / 0x2000)) * 0x2000;
+    return this.prg[base + (addr & 0x1FFF)];
+  }
+  
+  cpuWrite(addr, val) {
+    val &= 0xFF;
+    if (addr >= 0x6000 && addr < 0x8000) {
+      this.prgRAM[addr - 0x6000] = val;
+      return;
+    }
+    if (addr >= 0x8000 && addr <= 0x8003) this.prgBanks[0] = val & 0x0F;
+    else if (addr >= 0xC000 && addr <= 0xC003) this.prgBanks[1] = val & 0x1F;
+    else if (addr >= 0xD000 && addr <= 0xE003) {
+      const chrReg = ((addr - 0xD000) >> 2) * 2 + (addr & 3);
+      if (chrReg < 8) this.chrBanks[chrReg] = val;
+    } else if (addr >= 0xB003 && addr <= 0xB003) {
+      this.mirrorMode = val & 1;
+    }
+  }
+  
+  ppuRead(addr) {
+    if (addr < 0x2000) {
+      const bank = addr >> 10;
+      const base = (this.chrBanks[bank] % (this.chr.length / 0x400)) * 0x400;
+      return this.chr[base + (addr & 0x3FF)];
+    }
+    return 0;
+  }
+  
+  ppuWrite(addr, val) {
+    if (this.chrIsRAM && addr < 0x2000) this.chr[addr] = val & 0xFF;
+  }
+}
+
+class Mapper26 extends Mapper24 {} // VRC6b
+
+// 他のMapper (34, 69, 73, 76, 78, 85, 86, 87, 88, 89, 93, 94, 95, 97, 105, 113, 118, 119, 180, 184, 185, 206)
+// 以下簡易実装を追加
+
+class Mapper34 extends IMapper {
+  constructor(cart, bus) {
+    super(cart, bus);
+    this.prgBank = 0;
+    this.chrBank = 0;
+  }
+  cpuRead(addr) {
+    if (addr < 0x8000) return 0;
+    if (addr < 0xC000) {
+      const base = (this.prgBank % (this.prg.length / 0x8000)) * 0x8000;
+      return this.prg[base + (addr - 0x8000)];
+    }
+    const base = ((this.prg.length / 0x8000) - 1) * 0x8000;
+    return this.prg[base + (addr - 0xC000)];
+  }
+  cpuWrite(addr, val) {
+    if (addr >= 0x7FFD && addr <= 0x7FFF) this.prgBank = val;
+    else if (addr >= 0x8000) this.chrBank = val;
+  }
+  ppuRead(addr) {
+    if (addr < 0x2000) {
+      const base = (this.chrBank % (this.chr.length / 0x2000)) * 0x2000;
+      return this.chr[base + addr];
+    }
+    return 0;
+  }
+  ppuWrite(addr, val) {
+    if (this.chrIsRAM && addr < 0x2000) this.chr[addr] = val & 0xFF;
+  }
+}
+
+class Mapper69 extends Mapper16 {} // FME-7 (similar to 16)
+class Mapper73 extends IMapper { // VRC3 - PRG only
+  constructor(cart, bus) {
+    super(cart, bus);
+    this.prgBank = 0;
+  }
+  cpuRead(addr) {
+    if (addr < 0x8000) return 0;
+    if (addr < 0xC000) {
+      const base = (this.prgBank % (this.prg.length / 0x4000)) * 0x4000;
+      return this.prg[base + (addr - 0x8000)];
+    }
+    const base = ((this.prg.length / 0x4000) - 1) * 0x4000;
+    return this.prg[base + (addr - 0xC000)];
+  }
+  cpuWrite(addr, val) {
+    if (addr >= 0xF000) this.prgBank = val & 0x0F;
+  }
+  ppuRead(addr) {
+    if (addr < 0x2000) return this.chr[addr];
+    return 0;
+  }
+  ppuWrite(addr, val) {
+    if (this.chrIsRAM && addr < 0x2000) this.chr[addr] = val & 0xFF;
+  }
+}
+
+class Mapper76 extends Mapper2 {} // Similar to UxROM
+class Mapper78 extends Mapper2 {} 
+class Mapper85 extends Mapper24 {} // VRC7
+class Mapper86 extends Mapper11 {}
+class Mapper87 extends Mapper3 {}
+class Mapper88 extends Mapper2 {}
+class Mapper89 extends Mapper2 {}
+class Mapper93 extends Mapper2 {}
+class Mapper94 extends Mapper2 {}
+class Mapper95 extends Mapper2 {}
+class Mapper97 extends Mapper2 {}
+class Mapper105 extends Mapper1 {}
+class Mapper113 extends Mapper11 {}
+class Mapper118 extends Mapper4 {} // TxSROM (MMC3 variant)
+class Mapper119 extends Mapper4 {} // TQROM (MMC3 variant)
+class Mapper180 extends Mapper2 {}
+class Mapper184 extends Mapper3 {}
+class Mapper185 extends Mapper3 {}
+class Mapper206 extends Mapper2 {}
+
 
       class Cartridge {
         constructor(bytes) {
@@ -1427,7 +1969,8 @@ class Mapper0 extends IMapper {
           
 
           // サポートマッパの判定
-          this.valid = [0, 1, 2, 3, 4].includes(this.mapper);
+          this.valid = Object.keys(MapperRegistry).map(Number).includes(this.mapper);
+
           this.valid = true;
            }
       }
@@ -3295,27 +3838,9 @@ class Bus {
   }
 
   insertCartridge(cart) {
+    
     this.cartridge = cart;
-    switch (cart.mapper) {
-      case 0: this.mapper = new Mapper0(cart); break;
-      case 1: this.mapper = new Mapper1(cart); break;
-      case 2: this.mapper = new Mapper2(cart); break;
-      case 3: this.mapper = new Mapper3(cart); break;
-      case 4: this.mapper = new Mapper4(cart); break;
-      case 7: this.mapper = new Mapper7(cart, this); break;
-      case 9: this.mapper = new Mapper9(cart, this); break;
-      case 10: this.mapper = new Mapper10(cart, this); break;
-      case 30: this.mapper = new Mapper30(cart, this); break;
-      case 66: this.mapper = new Mapper66(cart, this); break;
-      case 71: this.mapper = new Mapper71(cart, this); break;
-      case 75: this.mapper = new Mapper75(cart, this); break;
-      case 79: this.mapper = new Mapper79(cart, this); break;
-      case 115: this.mapper = new Mapper115(cart, this); break;
-      case 144: this.mapper = new Mapper144(cart, this); break;
-      case 148: this.mapper = new Mapper148(cart, this); break;
-      case 228: this.mapper = new Mapper228(cart, this); break;
-      default: throw new Error(`Unsupported mapper ${cart.mapper}`);
-    }
+  this.mapper = createMapper(cart, this);
   }
 
   cpuRead(addr) {
