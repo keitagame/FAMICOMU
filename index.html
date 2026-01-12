@@ -223,6 +223,7 @@ border:1px solid rgb(255, 255, 255);
   119: (cart, bus) => new Mapper119(cart, bus),
   144: (cart, bus) => new Mapper144(cart, bus),
   148: (cart, bus) => new Mapper148(cart, bus),
+  152: (cart, bus) => new Mapper152(cart, bus),
   180: (cart, bus) => new Mapper180(cart, bus),
   184: (cart, bus) => new Mapper184(cart, bus),
   185: (cart, bus) => new Mapper185(cart, bus),
@@ -1857,7 +1858,73 @@ class Mapper73 extends IMapper { // VRC3 - PRG only
   }
 }
 
-class Mapper76 extends Mapper2 {} // Similar to UxROM
+class Mapper76 extends IMapper {
+  constructor(cart, bus) {
+    super(cart, bus);
+
+    // PRG: 8KB banks
+    this.prgBanks8 = this.prg.length / 0x2000;
+    this.prgMap = [0, 1, this.prgBanks8 - 2, this.prgBanks8 - 1];
+
+    // CHR: 4KB x 2
+    this.chrBanks4 = Math.max(1, this.chr.length / 0x1000);
+    this.chrBank0 = 0;
+    this.chrBank1 = 1;
+  }
+
+  cpuRead(addr) {
+    if (addr < 0x8000) return 0;
+
+    const slot = (addr - 0x8000) >> 13; // 8KB slot
+    const bank = this.prgMap[slot] % this.prgBanks8;
+    const base = bank * 0x2000;
+    return this.prg[base + (addr & 0x1fff)];
+  }
+
+  cpuWrite(addr, val) {
+    val &= 0xff;
+
+    switch (addr & 0xe001) {
+      case 0x8000:
+        this.prgMap[0] = val & 0x3f;
+        break;
+      case 0x8001:
+        this.prgMap[1] = val & 0x3f;
+        break;
+      case 0xA000:
+        this.chrBank0 = val & 0x3f;
+        break;
+      case 0xA001:
+        this.chrBank1 = val & 0x3f;
+        break;
+    }
+  }
+
+  ppuRead(addr) {
+    if (addr < 0x1000) {
+      const base = (this.chrBank0 % this.chrBanks4) * 0x1000;
+      return this.chr[base + addr];
+    }
+    if (addr < 0x2000) {
+      const base = (this.chrBank1 % this.chrBanks4) * 0x1000;
+      return this.chr[base + (addr - 0x1000)];
+    }
+    return 0;
+  }
+
+  ppuWrite(addr, val) {
+    if (this.chrIsRAM && addr < 0x2000) {
+      if (addr < 0x1000) {
+        const base = (this.chrBank0 % this.chrBanks4) * 0x1000;
+        this.chr[base + addr] = val & 0xff;
+      } else {
+        const base = (this.chrBank1 % this.chrBanks4) * 0x1000;
+        this.chr[base + (addr - 0x1000)] = val & 0xff;
+      }
+    }
+  }
+}
+
 class Mapper78 extends Mapper2 {} 
 class Mapper85 extends Mapper24 {} // VRC7
 class Mapper86 extends Mapper11 {}
@@ -1872,6 +1939,78 @@ class Mapper105 extends Mapper1 {}
 class Mapper113 extends Mapper11 {}
 class Mapper118 extends Mapper4 {} // TxSROM (MMC3 variant)
 class Mapper119 extends Mapper4 {} // TQROM (MMC3 variant)
+class Mapper152 extends IMapper {
+  constructor(cart, bus) {
+    super(cart, bus);
+
+    // PRG: 16KB バンク切替 + 後半固定
+    this.prgBanks16 = this.prg.length / 0x4000;
+    this.prgBank = 0;
+
+    // CHR: 8KB バンク切替
+    this.chrBanks4 = this.chr.length / 0x1000;
+this.chrBank0 = 0;
+this.chrBank1 = 1;
+
+  }
+
+  cpuRead(addr) {
+    if (addr < 0x6000) return 0;
+
+    if (addr < 0x8000) {
+      return this.prgRAM[addr - 0x6000];
+    }
+
+    // $8000-$BFFF : 切替バンク
+    if (addr < 0xC000) {
+      const base = (this.prgBank % this.prgBanks16) * 0x4000;
+      return this.prg[base + (addr - 0x8000)];
+    }
+
+    // $C000-$FFFF : 最終バンク固定
+    const base = (this.prgBanks16 - 1) * 0x4000;
+    return this.prg[base + (addr - 0xC000)];
+  }
+
+  cpuWrite(addr, val) {
+    val &= 0xff;
+
+    if (addr >= 0x6000 && addr < 0x8000) {
+      this.prgRAM[addr - 0x6000] = val;
+      return;
+    }
+
+    if (addr >= 0x8000) {
+  this.prgBank = val & 0x0f;
+
+  // 4KB × 2
+  this.chrBank0 = (val >> 4) & 0x0f;
+  this.chrBank1 = ((val >> 4) & 0x0f) | 1;
+}
+
+  }
+
+  ppuRead(addr) {
+  if (addr < 0x1000) {
+    const base = (this.chrBank0 % this.chrBanks4) * 0x1000;
+    return this.chr[base + addr];
+  }
+  if (addr < 0x2000) {
+    const base = (this.chrBank1 % this.chrBanks4) * 0x1000;
+    return this.chr[base + (addr - 0x1000)];
+  }
+  return 0;
+}
+
+
+  ppuWrite(addr, val) {
+    if (this.chrIsRAM && addr < 0x2000) {
+      const base = (this.chrBank % this.chrBanks8) * 0x2000;
+      this.chr[base + addr] = val & 0xff;
+    }
+  }
+}
+
 class Mapper180 extends Mapper2 {}
 class Mapper184 extends Mapper3 {}
 class Mapper185 extends Mapper3 {}
