@@ -1424,39 +1424,12 @@ class Mapper0 extends IMapper {
           // After Cartridge.parse or after load
 
           // デバッグ: 切り出し確認
-          console.log(
-            "[Cartridge] NES2:",
-            nes2,
-            "mapper:",
-            this.mapper,
-            "sub:",
-            this.submapper
-          );
-          console.log(
-            "[Cartridge] PRG size:",
-            this.prg.length,
-            "CHR size:",
-            this.chr.length,
-            "trainer:",
-            hasTrainer,
-            "mirror:",
-            this.mirror ? "V" : "H"
-          );
-          console.log(
-            "[Cartridge] PRG first 16:",
-            Array.from(this.prg.slice(0, 16))
-          );
-          console.log(
-            "[Cartridge] CHR first 16:",
-            Array.from(this.chr.slice(0, 16))
-          );
+          
 
           // サポートマッパの判定
           this.valid = [0, 1, 2, 3, 4].includes(this.mapper);
           this.valid = true;
-          console.log("CHR size bytes:", this.chr.length);
-          console.log("CHR first 16 bytes:", Array.from(this.chr.slice(0, 16)));
-        }
+           }
       }
 
 class PPURegisters {
@@ -1825,9 +1798,7 @@ class PPUTiming {
   }
 
   step(reg, bus) {
-    if (this.scanline === 241 && this.cycle === 0) console.log("VBlank");
-if (this.scanline === 241 && this.cycle === 1) console.log("NMI");
-
+   
     if (this.scanline === 241 && this.cycle === 1) {
     reg.setVBlank(true);
         if (reg.PPUCTRL & 0x80) bus.requestNMI();
@@ -3468,7 +3439,7 @@ class Bus {
       };
       window.addEventListener("keydown", (e) => {
         if (keyMapP1[e.code] !== undefined) {
-          console.log("a");
+          
           buttonsP1[keyMapP1[e.code]] = true;
           nes.bus.ctrl1.setButtons(buttonsP1);
           e.preventDefault(); // ブラウザのスクロール等を防ぐ
@@ -3565,10 +3536,9 @@ let sameCount = 0;
         loadCartridge(bytes) {
           const cart = new Cartridge(bytes);
 
-          console.log("Cartridge mapper =", cart.mapper, "valid =", cart.valid);
-          if (!cart.valid) throw new Error("Unsupported ROM");
+           if (!cart.valid) throw new Error("Unsupported ROM");
           this.bus.insertCartridge(cart);
-          console.log("Bus.mapper =", this.bus.mapper);
+          
           this.bus.apu.initAudio();
           this.cpu.reset();
           //this.ppu.reset();
@@ -3591,7 +3561,7 @@ let sameCount = 0;
       sameCount = 0;
     }
   let guard = 0;
-if (!this.ppu.consumeFrameFlag()) console.log("frame");
+if (!this.ppu.consumeFrameFlag()) 
 
   while (!this.ppu.consumeFrameFlag()) {
     const cpuCycles = this.cpu.step(); // CPU が消費したサイクル数
@@ -3742,6 +3712,17 @@ function handlePadInput(pad) {
         }
       });
   const imageData = ctx.createImageData(256, 240);
+let recorder = null;
+let recChunks = [];
+let recording = false;
+
+const recCanvas  = document.getElementById("rec");
+
+
+const recCtx  = recCanvas.getContext("2d", { alpha:false });
+
+
+recCtx.imageSmoothingEnabled  = false;
       function loop() {
         try {
           nes.stepFrame();
@@ -3786,14 +3767,89 @@ document.getElementById("pc").textContent = "0x"+nes.cpu.PC.toString(16)
         }
 
         
+        recCtx.clearRect(0, 0, recCanvas.width, recCanvas.height);
+  recCtx.drawImage(
+    canvas,
+    0, 0, 256, 240,
+    0, 0, recCanvas.width, recCanvas.height
+  );
         
-        console.log(
-          "PPU $0000..$0010:",
-          [...Array(16)].map((_, i) => nes.ppu.ppuRead(i))
-        );
 
         requestAnimationFrame(loop);
       }
+
+
+function setRecordResolution(on) {
+  if (on) {
+    canvas.width  = 256 * 3; // ← 3倍（768x720）
+    canvas.height = 240 * 3;
+    ctx.imageSmoothingEnabled = false;
+  } else {
+    canvas.width  = 256;
+    canvas.height = 240;
+    ctx.imageSmoothingEnabled = false;
+  }
+}
+
+function startRecording() {
+  if (recording) return;
+
+  const stream = recCanvas.captureStream(60);
+
+  recorder = new MediaRecorder(stream, {
+    mimeType: "video/webm; codecs=vp9",
+    videoBitsPerSecond: 20_000_000
+  });
+
+  recChunks = [];
+
+  recorder.ondataavailable = e => {
+    if (e.data.size > 0) recChunks.push(e.data);
+  };
+
+  recorder.onstop = () => {
+    const blob = new Blob(recChunks, { type: "video/webm" });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "nes_60fps.webm";
+    a.click();
+
+    URL.revokeObjectURL(url);
+  };
+
+  recorder.start();
+  recording = true;
+  console.log("● REC");
+}
+
+function stopRecording() {
+  if (!recording || !recorder) return;
+
+  recorder.stop();
+  recording = false;
+  recorder = null;
+  console.log("■ STOP");
+}
+window.addEventListener("keydown", e => {
+  if (e.repeat) return;
+
+  // R キーでトグル
+  if (e.code === "KeyR" && !e.shiftKey) {
+    e.preventDefault();
+    recording ? stopRecording() : startRecording();
+  }
+
+  // Shift + R で強制停止
+  if (e.code === "KeyR" && e.shiftKey) {
+    e.preventDefault();
+    stopRecording();
+  }
+});
+
     </script>
+
+<canvas id="rec" width="768" height="720" style="display:none"></canvas>
   </body>
 </html>
