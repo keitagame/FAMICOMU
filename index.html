@@ -3741,7 +3741,7 @@ function handlePadInput(pad) {
           status.textContent = "Error: " + e.message;
         }
       });
-
+  const imageData = ctx.createImageData(256, 240);
       function loop() {
         try {
           nes.stepFrame();
@@ -3753,7 +3753,7 @@ const pads = navigator.getGamepads();
   if (pads[0]) {
     handlePadInput(pads[0]);
   }
-        const imageData = ctx.createImageData(256, 240);
+      
         const data = imageData.data;
         const fb = nes.ppu.framebuffer;
 document.getElementById("pc").textContent = "0x"+nes.cpu.PC.toString(16)
