@@ -3993,22 +3993,33 @@ class Bus {
     this.cartridge = cart;
   this.mapper = createMapper(cart, this);
   }
+attachFDS(fds) {
+  this.fds = fds;
+}
 
   cpuRead(addr) {
     addr &= 0xffff;
+    if (this.fds) {
+    // FDS I/O
+    if (addr >= 0x4020 && addr <= 0x402F) {
+      return this.fds.ioRead(addr);
+    }
+
+    // FDS RAM / BIOS
+    if (addr >= 0x6000) {
+      return this.fds.cpuRead(addr);
+    }
+  }
+ 
     if (addr < 0x2000) return this.cpuRAM[addr & 0x7ff];
     if (addr < 0x4000) return this.ppu.cpuRead(0x2000 + (addr & 7));
  if (addr >= 0x4000 && addr <= 0x4015) return this.apu.read(addr);
     if (addr === 0x4016) return this.ctrl1.read();
     if (addr === 0x4017) return this.apu.read(addr); // ←超重要;
+     if (this.mapper) {
     if (addr >= 0x6000 && addr < 0x8000) return this.mapper.cpuRead(addr);
     if (addr >= 0x8000) return this.mapper.cpuRead(addr);
-   if (isFDS && addr >= 0x4020 && addr <= 0x402F) {
-  return fds.ioRead(addr);
-}
-if (isFDS && addr >= 0x6000) {
-  return fds.cpuRead(addr);
-}
+  }
 
     return 0;
   }
@@ -4016,15 +4027,17 @@ if (isFDS && addr >= 0x6000) {
   cpuWrite(addr, val) {
     addr &= 0xffff;
     val &= 0xff;
-    if (isFDS && addr >= 0x4020 && addr <= 0x402F) {
-  fds.ioWrite(addr, val);
-  return;
-}
-if (isFDS && addr >= 0x6000) {
-  fds.cpuWrite(addr, val);
-  return;
-}
-
+   if (this.fds) {
+    if (addr >= 0x4020 && addr <= 0x402F) {
+      this.fds.ioWrite(addr, val);
+      return;
+    }
+    if (addr >= 0x6000) {
+      this.fds.cpuWrite(addr, val);
+      return;
+    }
+  }
+  
     if (addr < 0x2000) {
       this.cpuRAM[addr & 0x7ff] = val;
       return;
@@ -4058,6 +4071,8 @@ if (isFDS && addr >= 0x6000) {
       this.ctrl2.write(val);
       return;
     }
+    if (this.mapper) {
+
     if (addr >= 0x6000 && addr < 0x8000) {
       this.mapper.cpuWrite(addr, val);
       return;
@@ -4067,13 +4082,29 @@ if (isFDS && addr >= 0x6000) {
       return;
     }
   }
+  }
 
   cartCHRRead(addr) {
+    if (this.fds) {
+    return this.fds.ppuRead(addr);
+  }
+  if (this.mapper) {
     return this.mapper.ppuRead(addr);
+  }
+    //return this.mapper.ppuRead(addr);
+    return 0;
   }
   
   cartCHRWrite(addr, val) {
+    if (this.fds) {
+    this.fds.ppuWrite(addr, val);
+    return;
+  }
+
+  if (this.mapper) {
     this.mapper.ppuWrite(addr, val);
+  }
+   // this.mapper.ppuWrite(addr, val);
   }
   
   ntMirror(addr) {
@@ -4113,6 +4144,7 @@ class FDS {
     this.disk = disk; // .fds raw
     this.ram = new Uint8Array(0x8000); // $6000-$DFFF (32KB)
 
+    this.chr = new Uint8Array(0x2000); // ★ 8KB CHR-RAM
     // Disk state
     this.diskPtr = 0;
     this.motorOn = false;
@@ -4120,10 +4152,14 @@ class FDS {
   }
 ioRead(addr) {
   switch (addr) {
-    case 0x4021:
-      return this.disk[this.diskPtr++] || 0;
     case 0x4023:
-      return 0x40; // disk ready
+      // bit6: disk ready
+      // bit0: data ready
+      return 0x40 | 0x01;
+
+    case 0x4021:
+      if (!this.motorOn) return 0;
+      return this.disk[this.diskPtr++] ?? 0;
   }
   return 0;
 }
@@ -4132,11 +4168,19 @@ ioWrite(addr, val) {
   switch (addr) {
     case 0x4025:
       this.motorOn = (val & 1) !== 0;
-      if (!this.motorOn) this.diskPtr = 0;
+      if (this.motorOn) {
+        this.diskPtr = 0;
+      }
       break;
   }
 }
+ppuRead(addr) {
+    return this.chr[addr & 0x1FFF];
+  }
 
+  ppuWrite(addr, val) {
+    this.chr[addr & 0x1FFF] = val;
+  }
   cpuRead(addr) {
     if (addr >= 0x6000 && addr <= 0xDFFF) {
       return this.ram[addr - 0x6000];
@@ -4462,7 +4506,9 @@ document.getElementById("fdsDisk").addEventListener("change", e => {
           if (fdsBios && fdsDisk) {
             nes = new NES();
     isFDS = true;
-    let fds = new FDS(nes.bus, fdsBios, fdsDisk);
+    //let fds = new FDS(nes.bus, fdsBios, fdsDisk);
+    nes.bus.attachFDS(new FDS(nes.bus, fdsBios, fdsDisk));
+        
     nes.cpu.reset(0xE000); // BIOS entry
     nes.stepFrame();
 
