@@ -4149,31 +4149,85 @@ class FDS {
     this.diskPtr = 0;
     this.motorOn = false;
     this.irqEnabled = false;
+    
+
+    this.dataReady = false;
+    this.irqFlag = false;
   }
 ioRead(addr) {
   switch (addr) {
-    case 0x4023:
-      // bit6: disk ready
-      // bit0: data ready
-      return 0x40 | 0x01;
 
-    case 0x4021:
+    case 0x4023: { // Disk status
+  let v = 0;
+
+  if (this.motorOn)   v |= 0x40; // bit6: disk ready
+  if (this.dataReady) v |= 0x01; // bit0: data ready
+  if (this.irqFlag)   v |= 0x02; // bit1: irq
+
+  console.log(
+    "[FDS] READ 4023",
+    "PC=" + this.bus.cpu.pc.toString(16),
+    "motor=" + this.motorOn,
+    "dataReady=" + this.dataReady,
+    "irq=" + this.irqFlag,
+    "val=" + v.toString(16)
+  );
+
+  return v;
+}
+
+
+    case 0x4021: // Data read
       if (!this.motorOn) return 0;
-      return this.disk[this.diskPtr++] ?? 0;
+
+      const d = this.disk[this.diskPtr++] ?? 0;
+console.log(
+      "[FDS] READ 4021",
+      "PC=" + this.bus.cpu.PC.toString(16),
+      "ptr=" + this.diskPtr,
+      "data=" + d.toString(16)
+    );
+      // データを読んだら一旦 ready を落とす
+      this.dataReady = false;
+      this.irqFlag = true; // ★ BIOSが次に見る
+
+      return d;
   }
+
   return 0;
 }
 
+
 ioWrite(addr, val) {
   switch (addr) {
-    case 0x4025:
-      this.motorOn = (val & 1) !== 0;
+    case 0x4025: // Motor control
+// bit1 がモーターON
+this.motorOn = (val & 0x02) !== 0;
+
+      
+console.log(
+      "[FDS] WRITE 4025",
+      "PC=" + this.bus.cpu.PC.toString(16),
+      "val=" + val.toString(16),
+      "motorOn=" + this.motorOn
+    );
       if (this.motorOn) {
         this.diskPtr = 0;
+        this.dataReady = true;   // ★ 重要
+        this.irqFlag = false;
       }
       break;
+
+    if (addr === 0x4020) {
+    console.log(
+      "[FDS] WRITE 4020 IRQ ACK",
+      "PC=" + this.bus.cpu.pc.toString(16)
+    );
+    this.irqFlag = false;
+    return;
   }
-}
+}}
+
 ppuRead(addr) {
     return this.chr[addr & 0x1FFF];
   }
