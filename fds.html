@@ -4189,7 +4189,7 @@ this.fakeRamValue = 0x00;
     this.irqEnabled = false;
     
 
-    this.dataReady = false;
+    this.dataReady = true;
     this.irqFlag = false;
   }
 ioRead(addr) {
@@ -4223,7 +4223,9 @@ console.log(
       // データを読んだら一旦 ready を落とす
       this.dataReady = false;
       this.irqFlag = true; // ★ BIOSが次に見る
-
+this.bus.requestIRQ();
+  this.irqFlag = true;
+  this.dataReady = true;
       return d;
   }
 
@@ -4243,6 +4245,7 @@ this.motorOn = (val & 0x02) !== 0;
 if (this.motorOn) {
     // ★ IRQを発生させる（仮）
     this.bus.requestIRQ();
+    this.dataReady = true;
   }
       
 console.log(
