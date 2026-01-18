@@ -2767,23 +2767,24 @@ class CPU {
     ]);
   }
 
-  reset(isFDS = false) {
-    if (isFDS) {
-    // FDS BIOS reset vector ($FFFC in BIOS space)
-    const lo = this.bus.fds.bios[0x1FFC];
-    const hi = this.bus.fds.bios[0x1FFD];
-    this.PC = lo | (hi << 8);
-  } else {
-    this.PC = this.read16(0xFFFC);
-  }
-    this.A = this.X = this.Y = 0;
-    this.S = 0xfd;
-    this.P = 0x24;
-    //this.PC = this.read16(0xfffc);
-    this.cycles = 0;
-    this.pendingNMI = false;
-    this.pendingIRQ = false;
-  }
+  reset() {
+  const lo = this.bus.cpuRead(0xFFFC);
+  const hi = this.bus.cpuRead(0xFFFD);
+  this.PC = lo | (hi << 8);
+
+  this.A = 0;
+  this.X = 0;
+  this.Y = 0;
+  this.S = 0xFD;
+  this.P = 0x24;
+
+  this.cycles = 7;
+  this.pendingNMI = false;
+  this.pendingIRQ = false;
+
+  console.log("RESET PC =", this.PC.toString(16));
+}
+
 
   // Flags
   updateZN(v) {
@@ -2977,7 +2978,9 @@ class CPU {
         `Unimplemented opcode $${op.toString(16).padStart(2, "0")} at PC=${(this.PC - 1).toString(16)}`
       );
     }
-    
+    // CPU実行ループ中
+
+
     const cycleBefore = this.cycles;
     entry.call(this);
      if (this.bus.takeNMI()) this.nmi();
@@ -4009,17 +4012,32 @@ this.cartridge = null;
 
   cpuRead(addr) {
     addr &= 0xffff;
+    if (addr >= 0x6000 && addr <= 0x7FFF) {
+    console.log(
+      "BUS READ",
+      addr.toString(16),
+      "fds=",
+      !!this.fds,
+      "mapper=",
+      !!this.mapper
+    );}
     if (this.fds) {
-    // FDS I/O
-    if (addr >= 0x4020 && addr <= 0x402F) {
-      return this.fds.ioRead(addr);
-    }
-
-    // FDS RAM / BIOS
-    if (addr >= 0x6000) {
-      return this.fds.cpuRead(addr);
-    }
+  // FDS I/O
+  if (addr >= 0x4020 && addr <= 0x402F) {
+    return this.fds.ioRead(addr);
   }
+
+  // FDS RAM
+  if (addr >= 0x6000 && addr <= 0x7FFF) {
+    return this.fds.cpuRead(addr);
+  }
+
+  // FDS BIOS
+  if (addr >= 0xE000) {
+    return this.fds.cpuRead(addr);
+  }
+}
+
  
     if (addr < 0x2000) return this.cpuRAM[addr & 0x7ff];
     if (addr < 0x4000) return this.ppu.cpuRead(0x2000 + (addr & 7));
@@ -4159,7 +4177,10 @@ class FDS {
     //this.ram = new Uint8Array(0x8000); // $6000-$DFFF (32KB)
 // FDS battery-backed RAM ($6000-$7FFF)
 this.ram = new Uint8Array(0x2000);
-this.ram.fill(0xFF);
+this.ram.fill(0x00);
+// FDS RAM (battery-backed)
+this.fakeRamValue = 0x00;
+
 
     this.chr = new Uint8Array(0x2000); // ★ 8KB CHR-RAM
     // Disk state
@@ -4179,25 +4200,15 @@ if (addr >= 0x6000 && addr <= 0x7FFF) {
 
   switch (addr) {
 
-    case 0x4023: { // Disk status
-  let v = 0;
-
-  if (this.motorOn)   v |= 0x40; // bit6: disk ready
-  if (this.dataReady) v |= 0x01; // bit0: data ready
-  if (this.irqFlag)   v |= 0x02; // bit1: irq
-
-  console.log(
-    "[FDS] READ 4023",
-    "PC=" + this.bus.cpu.PC.toString(16),
-    "motor=" + this.motorOn,
-    "dataReady=" + this.dataReady,
-    "irq=" + this.irqFlag,
-    "val=" + v.toString(16)
-  );
-
-  return v;
+    case 0x4023: {
+  return 0x51;
 }
 
+
+case 0x4024:
+case 0x4026:
+case 0x4027:
+  return 0x00;
 
     case 0x4021: // Data read
       if (!this.motorOn) return 0;
@@ -4221,11 +4232,18 @@ console.log(
 
 
 ioWrite(addr, val) {
+    if (addr >= 0x6000 && addr <= 0x7FFF) {
+    this.ram[addr - 0x6000] = val & 0xFF;
+    return;
+  }
   switch (addr) {
     case 0x4025: // Motor control
 // bit1 がモーターON
 this.motorOn = (val & 0x02) !== 0;
-
+if (this.motorOn) {
+    // ★ IRQを発生させる（仮）
+    this.bus.requestIRQ();
+  }
       
 console.log(
       "[FDS] WRITE 4025",
@@ -4258,9 +4276,19 @@ ppuRead(addr) {
     this.chr[addr & 0x1FFF] = val;
   }
   cpuRead(addr) {
-    if (addr >= 0x6000 && addr <= 0x7FFF) {
-    return this.ram[addr - 0x6000];
+     if (addr === 0xFFFC || addr === 0xFFFD) {
+    const v = this.bios[addr - 0xE000];
+    console.log(
+      "RESET VECTOR READ",
+      addr.toString(16),
+      v.toString(16)
+    );
+    return v;
   }
+     if (addr >= 0x6000 && addr <= 0x7FFF) {
+    return this.bus.cpu.A; // CPUのAレジスタ
+  }
+   
   if (addr >= 0xE000) {
     return this.bios[addr - 0xE000];
   }
@@ -4269,8 +4297,15 @@ ppuRead(addr) {
 
   cpuWrite(addr, val) {
     if (addr >= 0x6000 && addr <= 0x7FFF) {
-    this.ram[addr - 0x6000] = val;
+         console.log(
+      "[FDS RAM WRITE]",
+      addr.toString(16),
+      val.toString(16)
+    );
+    this.fakeRamValue = val & 0xFF;
   }
+   
+   
   }
 }
 
