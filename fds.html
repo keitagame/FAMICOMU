@@ -4118,6 +4118,9 @@ this.cartridge = null;
   }
   
   ntMirror(addr) {
+if (!this.mapper) {
+    return (addr - 0x2000) & 0x0FFF; // FDS用
+  }
     const a = (addr - 0x2000) & 0x0fff;
     const table = (a >> 10) & 3;
     const offset = a & 0x03ff;
@@ -4153,7 +4156,10 @@ class FDS {
     this.bus = bus;
     this.bios = bios; // 8KB
     this.disk = disk; // .fds raw
-    this.ram = new Uint8Array(0x8000); // $6000-$DFFF (32KB)
+    //this.ram = new Uint8Array(0x8000); // $6000-$DFFF (32KB)
+// FDS battery-backed RAM ($6000-$7FFF)
+this.ram = new Uint8Array(0x2000);
+this.ram.fill(0xFF);
 
     this.chr = new Uint8Array(0x2000); // ★ 8KB CHR-RAM
     // Disk state
@@ -4166,6 +4172,11 @@ class FDS {
     this.irqFlag = false;
   }
 ioRead(addr) {
+// BIOS battery check workaround
+if (addr >= 0x6000 && addr <= 0x7FFF) {
+  return this.ram[addr - 0x6000] & 0xFF;
+}
+
   switch (addr) {
 
     case 0x4023: { // Disk status
@@ -4177,7 +4188,7 @@ ioRead(addr) {
 
   console.log(
     "[FDS] READ 4023",
-    "PC=" + this.bus.cpu.pc.toString(16),
+    "PC=" + this.bus.cpu.PC.toString(16),
     "motor=" + this.motorOn,
     "dataReady=" + this.dataReady,
     "irq=" + this.irqFlag,
@@ -4232,7 +4243,7 @@ console.log(
 case 0x4020: // IRQ ACK
       console.log(
         "[FDS] WRITE 4020 IRQ ACK",
-        "PC=" + this.bus.cpu.pc.toString(16)
+        "PC=" + this.bus.cpu.PC.toString(16)
       );
       this.irqFlag = false;
       break;
@@ -4247,19 +4258,19 @@ ppuRead(addr) {
     this.chr[addr & 0x1FFF] = val;
   }
   cpuRead(addr) {
-    if (addr >= 0x6000 && addr <= 0xDFFF) {
-      return this.ram[addr - 0x6000];
-    }
-    if (addr >= 0xE000) {
-      return this.bios[addr - 0xE000];
-    }
+    if (addr >= 0x6000 && addr <= 0x7FFF) {
+    return this.ram[addr - 0x6000];
+  }
+  if (addr >= 0xE000) {
+    return this.bios[addr - 0xE000];
+  }
     return 0;
   }
 
   cpuWrite(addr, val) {
-    if (addr >= 0x6000 && addr <= 0xDFFF) {
-      this.ram[addr - 0x6000] = val;
-    }
+    if (addr >= 0x6000 && addr <= 0x7FFF) {
+    this.ram[addr - 0x6000] = val;
+  }
   }
 }
 
