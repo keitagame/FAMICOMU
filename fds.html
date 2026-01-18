@@ -2767,12 +2767,19 @@ class CPU {
     ]);
   }
 
-  reset() {
-    
+  reset(isFDS = false) {
+    if (isFDS) {
+    // FDS BIOS reset vector ($FFFC in BIOS space)
+    const lo = this.bus.fds.bios[0x1FFC];
+    const hi = this.bus.fds.bios[0x1FFD];
+    this.PC = lo | (hi << 8);
+  } else {
+    this.PC = this.read16(0xFFFC);
+  }
     this.A = this.X = this.Y = 0;
     this.S = 0xfd;
     this.P = 0x24;
-    this.PC = this.read16(0xfffc);
+    //this.PC = this.read16(0xfffc);
     this.cycles = 0;
     this.pendingNMI = false;
     this.pendingIRQ = false;
@@ -3992,9 +3999,12 @@ class Bus {
     
     this.cartridge = cart;
   this.mapper = createMapper(cart, this);
+this.fds = null;
   }
 attachFDS(fds) {
   this.fds = fds;
+this.cartridge = null;
+  this.mapper = null; // ★ これが必須
 }
 
   cpuRead(addr) {
@@ -4111,7 +4121,8 @@ attachFDS(fds) {
     const a = (addr - 0x2000) & 0x0fff;
     const table = (a >> 10) & 3;
     const offset = a & 0x03ff;
-    const m = this.mapper.mirroring();
+   const m = this.mapper ? this.mapper.mirroring() : 0;
+
     const map = m === 0 ? [0, 0, 1, 1] : [0, 1, 0, 1];
     return map[table] * 0x400 + offset;
   }
@@ -4218,14 +4229,14 @@ console.log(
       }
       break;
 
-    if (addr === 0x4020) {
-    console.log(
-      "[FDS] WRITE 4020 IRQ ACK",
-      "PC=" + this.bus.cpu.pc.toString(16)
-    );
-    this.irqFlag = false;
-    return;
-  }
+case 0x4020: // IRQ ACK
+      console.log(
+        "[FDS] WRITE 4020 IRQ ACK",
+        "PC=" + this.bus.cpu.pc.toString(16)
+      );
+      this.irqFlag = false;
+      break;
+    
 }}
 
 ppuRead(addr) {
@@ -4562,8 +4573,8 @@ document.getElementById("fdsDisk").addEventListener("change", e => {
     isFDS = true;
     //let fds = new FDS(nes.bus, fdsBios, fdsDisk);
     nes.bus.attachFDS(new FDS(nes.bus, fdsBios, fdsDisk));
-        
-    nes.cpu.reset(0xE000); // BIOS entry
+        nes.cpu.reset(0xE000); 
+    //nes.cpu.reset(0xE000); // BIOS entry
     nes.stepFrame();
 
           loop();
