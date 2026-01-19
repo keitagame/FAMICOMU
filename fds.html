@@ -4076,10 +4076,12 @@ this.cartridge = null;
     );}
     if (this.fds) {
   // FDS I/O
-  if (addr >= 0x4030 && addr <= 0x4033) {
+  if (addr >= 0x4031 && addr <= 0x4033) {
     return this.fds.ioRead(addr);
   }
-
+if (isFDS && addr === 0x4030) {
+    return 0x80   // ★ bit7=1 → ディスク挿入済み
+  }
   // FDS RAM
   if (addr >= 0x6000 && addr <= 0x7FFF) {
     return this.fds.cpuRead(addr);
@@ -4274,15 +4276,25 @@ if (addr >= 0x6000 && addr <= 0x7FFF) {
 
   switch (addr) {
 
-case 0x4030: // データ読み込み
-  this.dataReady = false;
+  case 0x4030: { // データ読み込み
   const data = this.disk[this.diskPtr] ?? 0x00;
-  if (this.motorOn) this.diskPtr++;
+
   // 即次が読めるようにする（BIOS騙し用）
-  this.dataReady = false;
-this.irqFlag = true;
+  if (this.motorOn) {
+    this.diskPtr++;
+    this.dataReady = true;   // motorOn のときだけ true
+  } else {
+    this.dataReady = false;
+  }
+
+  this.irqFlag = true;
   this.bus.requestIRQ();
   return data;
+}
+
+
+
+
 
     case 0x4031: // ディスクステータス
   let s4031 = 0x00;
@@ -4377,18 +4389,23 @@ ioWrite(addr, val) {
    case 0x4025:
   this.motorOn = (val & 0x01) !== 0; // ★ bit1
 
-  this.irqEnabled = (val & 0x80) !== 0;  // bit1
+  this.irqEnabled = (val & 0x81) !== 0;  // bit1
   const reset = (val & 0x04) !== 0;      // bit2
 
   if (reset) {
-    this.diskPtr = 0x10; // ★ FDSヘッダを飛ばす
+    this.diskPtr = 0x00; // ★ FDSヘッダを飛ばす
 
 
     this.dataReady = false;
     this.irqFlag = false;
     this.bus.irqLine = false;
   }
+if (this.motorOn) {
+this.diskPtr = 0x10; // ★ FDSヘッダを飛ばす
 
+
+    this.dataReady = true;
+  }
   console.log(
     "[FDS] WRITE 4025",
     "PC=" + this.cpu.PC.toString(16),
@@ -4397,12 +4414,7 @@ ioWrite(addr, val) {
     "diskPtr=" + this.diskPtr
   );
 
-  if (this.motorOn) {
-this.diskPtr = 0x10; // ★ FDSヘッダを飛ばす
-
-
-    this.dataReady = true;
-  }
+  
   break;
 
 
