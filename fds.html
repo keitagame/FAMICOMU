@@ -4241,6 +4241,13 @@ if (addr >= 0x6000 && addr <= 0x7FFF) {
 }
 
   switch (addr) {
+case 0x4030: // データ読み込み
+  this.dataReady = false;
+  const data = this.disk[this.diskPtr] ?? 0x00;
+  if (this.motorOn) this.diskPtr++;
+  // 即次が読めるようにする（BIOS騙し用）
+  this.dataReady = true;
+  return data;
 
     case 0x4031: // ディスクステータス
   let s4031 = 0x00;
@@ -4250,13 +4257,6 @@ if (addr >= 0x6000 && addr <= 0x7FFF) {
   this.bus.irqLine = false;
   return s4031;
 
-case 0x4030: // データ読み込み
-  this.dataReady = false;
-  const data = this.disk[this.diskPtr] ?? 0x00;
-  if (this.motorOn) this.diskPtr++;
-  // 即次が読めるようにする（BIOS騙し用）
-  this.dataReady = true;
-  return data;
 
     
     case 0x4032:
@@ -4265,21 +4265,15 @@ case 0x4030: // データ読み込み
   return 0x41;
 
 
-   case 0x4023: {
-  let v = 0x40; // bit6: disk ready は常に1
+  case 0x4023: {
+  let v = 0x40; // bit6 = disk inserted
 
-  // dataReady は「実際に読む準備ができたときだけ」
-  if (this.dataReady) v |= 0x01;
-
-  // IRQ が発生しているときだけ
-  if (this.irqFlag) v |= 0x02;
+  if (this.dataReady) v |= 0x01; // bit0
+  if (this.irqFlag)   v |= 0x02; // bit1
 
   console.log(
     "[FDS] READ 4023",
     "PC=" + this.bus.cpu.PC.toString(16),
-    "motor=" + this.motorOn,
-    "dataReady=" + this.dataReady,
-    "irq=" + this.irqFlag,
     "val=" + v.toString(16)
   );
 
