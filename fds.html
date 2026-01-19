@@ -4268,8 +4268,21 @@ reset() {
     this.transferIrq = false;
     this.writeSkip = 0;
     this.diskInserted = true; // ディスク挿入状態
+    this.transferCycles = 0;
   }
-  
+  tick(cycles) {
+    if (this.motorOn) {
+        this.transferCycles -= cycles;
+        if (this.transferCycles <= 0) {
+            this.transferCycles = 150; // 約150〜200サイクルごとに1バイト準備
+            this.dataReady = true;
+            if (this.irqEnabled) {
+                this.irqFlag = true;
+                this.bus.requestIRQ(); // CPUに割り込みをかける
+            }
+        }
+    }
+}
 initBatteryRAM() {
     // BIOSが期待するバッテリーRAMの署名
     // 通常、未初期化状態では特定のパターンが必要
@@ -4299,9 +4312,12 @@ if (addr >= 0x6000 && addr <= 0x7FFF) {
   case 0x4030: { // データ読み込み
   const data = this.disk[this.diskPtr] ?? 0x00;
 console.log("0x4030");
-if (this.motorOn && !this.resetTransfer) {
-            data |= 0x02; 
-        }
+ if (this.motorOn) {
+        this.diskPtr++;
+        this.dataReady = false; // ★重要：読んだのでフラグを下ろす
+        this.irqFlag = false;   // ★重要：IRQを解除
+        this.bus.irqLine = false; 
+    }
   // 即次が読めるようにする（BIOS騙し用）
  // if (this.motorOn) {
  //   this.diskPtr++;
@@ -4419,6 +4435,10 @@ ioWrite(addr, val) {
     this.irqFlag = false;
     this.bus.irqLine = false;
   }
+  if (val & 0x04) {
+        this.diskPtr = this.dataOffset;
+        this.dataReady = false;
+    }
 if (this.motorOn) {
 this.diskPtr = this.dataOffset; 
 
@@ -4626,6 +4646,7 @@ let sameCount = 0;
         
           this.cpu = new CPU(this.bus);
           this.ppu = this.bus.ppu;
+          
           this.running = false;
         }
         loadCartridge(bytes) {
@@ -4639,8 +4660,9 @@ let sameCount = 0;
           //this.ppu.reset();
         }
         loadDisk(bytes){
+          this.fds = new FDS(this.bus, fdsBios, fdsDisk,this.cpu)
           const cart = new Cartridge(fdsDisk);
-          this.bus.attachFDS(new FDS(this.bus, fdsBios, fdsDisk,this.cpu),cart);
+          this.bus.attachFDS(this.fds,cart);
           this.bus.apu.initAudio();
           this.cpu.reset(0xE000); 
         }
@@ -4665,12 +4687,13 @@ if (!this.ppu.consumeFrameFlag())
 
   while (!this.ppu.consumeFrameFlag()) {
     const cpuCycles = this.cpu.step(); // CPU が消費したサイクル数
-    
+    this.fds.tick(cpuCycles);
     for(let i = 0; i < cpuCycles; i++){
 this.bus.apu.step();
 this.ppu.step();
 this.ppu.step();
 this.ppu.step();
+
 }
     // NES: CPU 1 cycle = PPU 3 cycles
     
