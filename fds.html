@@ -4240,6 +4240,13 @@ this.fakeRamValue = 0x00;
 
     this.chr = new Uint8Array(0x2000); // ★ 8KB CHR-RAM
     // Disk state
+if (this.disk[0] === 0x46 && this.disk[1] === 0x44 && this.disk[2] === 0x53) {
+        this.dataOffset = 0x10;
+        console.log("[FDS] Header detected. Offset = 16");
+    } else {
+        this.dataOffset = 0x00;
+        console.log("[FDS] No header detected. Offset = 0");
+    }
     this.diskPtr = 0x10;
     this.motorOn = false;
     this.irqEnabled = false;
@@ -4248,8 +4255,21 @@ this.fakeRamValue = 0x00;
 
     this.dataReady = true;
     this.irqFlag = false;
-this.initBatteryRAM();
+this.reset();
   }
+reset() {
+    this.ram.fill(0x00);
+    // 初期化時は判定したオフセットを使用
+    this.diskPtr = this.dataOffset; 
+    this.resetTransfer = false; 
+    this.motorOn = false;
+    this.irqEnabled = false;
+    this.timerIrq = false;
+    this.transferIrq = false;
+    this.writeSkip = 0;
+    this.diskInserted = true; // ディスク挿入状態
+  }
+  
 initBatteryRAM() {
     // BIOSが期待するバッテリーRAMの署名
     // 通常、未初期化状態では特定のパターンが必要
@@ -4278,17 +4298,20 @@ if (addr >= 0x6000 && addr <= 0x7FFF) {
 
   case 0x4030: { // データ読み込み
   const data = this.disk[this.diskPtr] ?? 0x00;
-
+console.log("0x4030");
+if (this.motorOn && !this.resetTransfer) {
+            data |= 0x02; 
+        }
   // 即次が読めるようにする（BIOS騙し用）
-  if (this.motorOn) {
-    this.diskPtr++;
-    this.dataReady = true;   // motorOn のときだけ true
-  } else {
-    this.dataReady = false;
-  }
+ // if (this.motorOn) {
+ //   this.diskPtr++;
+ //   this.dataReady = true;   // motorOn のときだけ true
+ // } else {
+ //   this.dataReady = false;
+//  }
 
-  this.irqFlag = true;
-  this.bus.requestIRQ();
+  this.irqFlag = false;
+ 
   return data;
 }
 
@@ -4298,6 +4321,7 @@ if (addr >= 0x6000 && addr <= 0x7FFF) {
 
     case 0x4031: // ディスクステータス
   let s4031 = 0x00;
+console.log("0x4031");
   if (this.irqFlag) s4031 |= 0x80;    // Bit7: IRQ
   if (this.dataReady) s4031 |= 0x02; // Bit1: Data Ready
   this.irqFlag = false;
@@ -4307,19 +4331,14 @@ if (addr >= 0x6000 && addr <= 0x7FFF) {
 
     
     case 0x4032:
-  let v = 0x40; // bit6: Disk inserted
+  let v = 0x00; // bit6: Disk inserted
 
-  if (this.motorOn && this.dataReady) {
-    v |= 0x01;  // bit0: Ready
+  if (!this.motorOn) {
+console.log("ready");
+    v |= 0x02;  // bit0: Ready
   }
-
-  console.log(
-    "[FDS.ioRead] 4032",
-    "PC=" + this.cpu.PC.toString(16),
-    "motorOn=" + this.motorOn,
-    "dataReady=" + this.dataReady,
-    "val=" + v.toString(16)
-  );
+v |= 0x40;
+ 
 
   return v;
 
@@ -4393,7 +4412,7 @@ ioWrite(addr, val) {
   const reset = (val & 0x04) !== 0;      // bit2
 
   if (reset) {
-    this.diskPtr = 0x00; // ★ FDSヘッダを飛ばす
+    this.diskPtr = this.dataOffset; 
 
 
     this.dataReady = false;
@@ -4401,7 +4420,7 @@ ioWrite(addr, val) {
     this.bus.irqLine = false;
   }
 if (this.motorOn) {
-this.diskPtr = 0x10; // ★ FDSヘッダを飛ばす
+this.diskPtr = this.dataOffset; 
 
 
     this.dataReady = true;
