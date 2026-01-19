@@ -205,6 +205,7 @@ let isFDS = false;
   16: (cart, bus) => new Mapper16(cart, bus),
   18: (cart, bus) => new Mapper18(cart, bus),
   19: (cart, bus) => new Mapper19(cart, bus),  // Namco 163
+  20: (cart, bus) => new Mapper20(cart, bus, fdsBios, fdsDisk),
   21: (cart, bus) => new Mapper21(cart, bus),  // VRC4a
   22: (cart, bus) => new Mapper22(cart, bus),  // VRC2a
   23: (cart, bus) => new Mapper23(cart, bus),  // VRC2b/4e
@@ -1006,6 +1007,34 @@ class Mapper0 extends IMapper {
           return this.mirrorMode;
         }
       }
+class Mapper20 extends IMapper {
+  constructor(cart, bus, bios, disk) {
+    super(cart, bus)
+    this.bios = bios          // 8KB
+    this.disk = disk          // fds image
+    this.diskInserted = true
+  }
+
+  cpuRead(addr) {
+    // BIOS ROM
+    if (addr >= 0xE000) {
+      return this.bios[addr - 0xE000]
+    }
+
+    // FDS I/O status
+    if (addr === 0x4030) return 0x80   // disk inserted
+    if (addr === 0x4031) return 0x00
+    if (addr === 0x4032) return 0x00   // READY
+    if (addr === 0x4033) return 0x00
+
+    return 0
+  }
+
+  cpuWrite(addr, val) {
+    // モーターON/OFF 等（今回は無視）
+  }
+}
+
       class Mapper30 extends IMapper {
         constructor(cart, bus) {
           super(cart, bus);
@@ -4025,10 +4054,13 @@ class Bus {
   this.mapper = createMapper(cart, this);
 this.fds = null;
   }
-attachFDS(fds) {
+attachFDS(fds,cart) {
   this.fds = fds;
 this.cartridge = null;
-  this.mapper = null; // ★ これが必須
+
+  cart.mapper = 20
+
+
 }
 
   cpuRead(addr) {
@@ -4343,7 +4375,8 @@ ioWrite(addr, val) {
   }
   switch (addr) {
    case 0x4025:
-  this.motorOn = (val & 0x01) !== 0;     // ★ bit0
+  this.motorOn = (val & 0x01) !== 0; // ★ bit1
+
   this.irqEnabled = (val & 0x80) !== 0;  // bit1
   const reset = (val & 0x04) !== 0;      // bit2
 
@@ -4575,7 +4608,8 @@ let sameCount = 0;
           //this.ppu.reset();
         }
         loadDisk(bytes){
-          this.bus.attachFDS(new FDS(this.bus, fdsBios, fdsDisk,this.cpu));
+          const cart = new Cartridge(fdsDisk);
+          this.bus.attachFDS(new FDS(this.bus, fdsBios, fdsDisk,this.cpu),cart);
           this.bus.apu.initAudio();
           this.cpu.reset(0xE000); 
         }
@@ -4758,6 +4792,8 @@ document.getElementById("fdsDisk").addEventListener("change", e => {
           if (fdsBios && fdsDisk) {
             nes = new NES();
     isFDS = true;
+
+
     //let fds = new FDS(nes.bus, fdsBios, fdsDisk);
     nes.loadDisk(null);
     //nes.cpu.reset(0xE000); // BIOS entry
