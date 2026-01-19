@@ -4206,7 +4206,7 @@ this.fakeRamValue = 0x00;
 
     this.chr = new Uint8Array(0x2000); // ★ 8KB CHR-RAM
     // Disk state
-    this.diskPtr = 0;
+    this.diskPtr = 0x10;
     this.motorOn = false;
     this.irqEnabled = false;
     this.bus.irqLine = false;
@@ -4247,7 +4247,9 @@ case 0x4030: // データ読み込み
   const data = this.disk[this.diskPtr] ?? 0x00;
   if (this.motorOn) this.diskPtr++;
   // 即次が読めるようにする（BIOS騙し用）
-  this.dataReady = true;
+  this.dataReady = false;
+this.irqFlag = true;
+  this.bus.requestIRQ();
   return data;
 
     case 0x4031: // ディスクステータス
@@ -4346,7 +4348,9 @@ ioWrite(addr, val) {
   const reset = (val & 0x04) !== 0;      // bit2
 
   if (reset) {
-    this.diskPtr = 0;
+    this.diskPtr = 0x10; // ★ FDSヘッダを飛ばす
+
+
     this.dataReady = false;
     this.irqFlag = false;
     this.bus.irqLine = false;
@@ -4356,10 +4360,14 @@ ioWrite(addr, val) {
     "[FDS] WRITE 4025",
     "PC=" + this.cpu.PC.toString(16),
     "val=" + val.toString(16),
-    "motorOn=" + this.motorOn
+    "motorOn=" + this.motorOn,
+    "diskPtr=" + this.diskPtr
   );
 
   if (this.motorOn) {
+this.diskPtr = 0x10; // ★ FDSヘッダを飛ばす
+
+
     this.dataReady = true;
   }
   break;
