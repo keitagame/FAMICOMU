@@ -4241,6 +4241,7 @@ if (addr >= 0x6000 && addr <= 0x7FFF) {
 }
 
   switch (addr) {
+
 case 0x4030: // データ読み込み
   this.dataReady = false;
   const data = this.disk[this.diskPtr] ?? 0x00;
@@ -4260,9 +4261,22 @@ case 0x4030: // データ読み込み
 
     
     case 0x4032:
-  // bit0 = 1 : Ready
-  // bit6 = 1 : Disk inserted
-  return 0x41;
+  let v = 0x40; // bit6: Disk inserted
+
+  if (this.motorOn && this.dataReady) {
+    v |= 0x01;  // bit0: Ready
+  }
+
+  console.log(
+    "[FDS.ioRead] 4032",
+    "PC=" + this.cpu.PC.toString(16),
+    "motorOn=" + this.motorOn,
+    "dataReady=" + this.dataReady,
+    "val=" + v.toString(16)
+  );
+
+  return v;
+
 
 
   case 0x4023: {
@@ -4285,7 +4299,7 @@ case 0x4030: // データ読み込み
 
     case 0x4033: // External connector
       //return 0x80;
-      return 0x00; 
+      return 0x81; 
 case 0x4024:
 case 0x4026: // IRQ RESET
   console.log("[FDS] WRITE 4026 IRQ RESET PC=" + this.bus.cpu.PC.toString(16));
@@ -4328,7 +4342,7 @@ ioWrite(addr, val) {
   switch (addr) {
    case 0x4025:
   this.motorOn = (val & 0x01) !== 0;     // ★ bit0
-  this.irqEnabled = (val & 0x02) !== 0;  // bit1
+  this.irqEnabled = (val & 0x80) !== 0;  // bit1
   const reset = (val & 0x04) !== 0;      // bit2
 
   if (reset) {
@@ -4346,7 +4360,7 @@ ioWrite(addr, val) {
   );
 
   if (this.motorOn) {
-    
+    this.dataReady = true;
   }
   break;
 
