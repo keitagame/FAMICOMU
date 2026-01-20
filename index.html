@@ -98,13 +98,23 @@ border:1px solid rgb(255, 255, 255);
   Select
   <input id="rom" type="file" class="file-input">
 </label>
+<label class="file-label">
+  Load FDS BIOS
+  <input id="fdsBios" type="file" class="file-input">
+</label>
+
+<label class="file-label">
+  Load FDS Disk
+  <input id="fdsDisk" type="file" class="file-input">
+</label>
+
 <span id="file-name"></span>
 
       
       <button id="fullscreenBtn">Fullscreen</button>
 
-      <button id="start" disabled>Start</button>
-      <div class="mono" id="status">No ROM</div>
+      <button id="start">Start</button>
+      <div class="mono" id="status" style="display:none">No ROM</div>
       <div><span class="mono">CPU PC:</span> <span id="pc" class="mono">0x0000</span></div>
     </header>
     <div class="row">
@@ -128,6 +138,10 @@ border:1px solid rgb(255, 255, 255);
     
 
     <script type="module">
+      let fdsBios = null; // Uint8Array (8192 bytes)
+let fdsDisk = null; // Uint8Array (.fds)
+let isFDS = false;
+
       const u8 = (n) => n & 0xff;
       const u16 = (n) => n & 0xffff;
       const lo = (n) => n & 0xff;
@@ -191,6 +205,7 @@ border:1px solid rgb(255, 255, 255);
   16: (cart, bus) => new Mapper16(cart, bus),
   18: (cart, bus) => new Mapper18(cart, bus),
   19: (cart, bus) => new Mapper19(cart, bus),  // Namco 163
+  20: (cart, bus) => new Mapper20(cart, bus, fdsBios, fdsDisk),
   21: (cart, bus) => new Mapper21(cart, bus),  // VRC4a
   22: (cart, bus) => new Mapper22(cart, bus),  // VRC2a
   23: (cart, bus) => new Mapper23(cart, bus),  // VRC2b/4e
@@ -992,6 +1007,34 @@ class Mapper0 extends IMapper {
           return this.mirrorMode;
         }
       }
+class Mapper20 extends IMapper {
+  constructor(cart, bus, bios, disk) {
+    super(cart, bus)
+    this.bios = bios          // 8KB
+    this.disk = disk          // fds image
+    this.diskInserted = true
+  }
+
+  cpuRead(addr) {
+    // BIOS ROM
+    if (addr >= 0xE000) {
+      return this.bios[addr - 0xE000]
+    }
+
+    // FDS I/O status
+    if (addr === 0x4030) return 0x80   // disk inserted
+    if (addr === 0x4031) return 0x00
+    if (addr === 0x4032) return 0x00   // READY
+    if (addr === 0x4033) return 0x00
+
+    return 0
+  }
+
+  cpuWrite(addr, val) {
+    // モーターON/OFF 等（今回は無視）
+  }
+}
+
       class Mapper30 extends IMapper {
         constructor(cart, bus) {
           super(cart, bus);
@@ -2754,17 +2797,23 @@ class CPU {
   }
 
   reset() {
-    if (!this.bus.mapper) {
-      throw new Error("Mapper not set before CPU.reset()");
-    }
-    this.A = this.X = this.Y = 0;
-    this.S = 0xfd;
-    this.P = 0x24;
-    this.PC = this.read16(0xfffc);
-    this.cycles = 0;
-    this.pendingNMI = false;
-    this.pendingIRQ = false;
-  }
+  const lo = this.bus.cpuRead(0xFFFC);
+  const hi = this.bus.cpuRead(0xFFFD);
+  this.PC = lo | (hi << 8);
+
+  this.A = 0;
+  this.X = 0;
+  this.Y = 0;
+  this.S = 0xFD;
+  this.P = 0x24;
+
+  this.cycles = 7;
+  this.pendingNMI = false;
+  this.pendingIRQ = false;
+
+  console.log("RESET PC =", this.PC.toString(16));
+}
+
 
   // Flags
   updateZN(v) {
@@ -2958,7 +3007,9 @@ class CPU {
         `Unimplemented opcode $${op.toString(16).padStart(2, "0")} at PC=${(this.PC - 1).toString(16)}`
       );
     }
-    
+    // CPU実行ループ中
+
+
     const cycleBefore = this.cycles;
     entry.call(this);
      if (this.bus.takeNMI()) this.nmi();
@@ -3004,10 +3055,31 @@ class CPU {
       this.updateZN(r);
       return r;
     };
+    const BR = (cond) => {
+      const offRaw = this.read(this.PC++); 
+  // 1. 符号拡張を行う
+  const off = (offRaw & 0x80) ? (offRaw - 256) : offRaw;
+
+  if (cond) {
+    const base = this.PC; 
+    const dest = (base + off) & 0xffff;
+
+    // 2. ページ跨ぎ判定（オプションだが正確さのために）
+    if ((base & 0xff00) !== (dest & 0xff00)) {
+      this.cycles++;
+    }
+    
+    this.PC = dest;
+    this.cycles++; // 分岐成立による追加
+  }
+};
 
     // Branch helper
-   const BR = (cond) => {
-  const off = this.rel();
+   const BaR = (cond) => {
+    const offRaw = this.rel(); // 1バイト読み込み
+const off = (offRaw & 0x80) ? (offRaw - 256) : offRaw; // 符号拡張
+
+  //const off = this.rel();
   if (cond) {
     const base = this.PC; // ← offset fetch 後の PC
     const dest = (base + off) & 0xffff;
@@ -3980,24 +4052,75 @@ class Bus {
     
     this.cartridge = cart;
   this.mapper = createMapper(cart, this);
+this.fds = null;
   }
+attachFDS(fds,cart) {
+  this.fds = fds;
+this.cartridge = null;
+
+  cart.mapper = 20
+
+
+}
 
   cpuRead(addr) {
     addr &= 0xffff;
+    if (addr >= 0x6000 && addr <= 0x7FFF) {
+    console.log(
+      "BUS READ",
+      addr.toString(16),
+      "fds=",
+      !!this.fds,
+      "mapper=",
+      !!this.mapper
+    );}
+    if (this.fds) {
+  // FDS I/O
+  if (addr >= 0x4031 && addr <= 0x4033) {
+    return this.fds.ioRead(addr);
+  }
+if (isFDS && addr === 0x4030) {
+    return 0x80   // ★ bit7=1 → ディスク挿入済み
+  }
+  // FDS RAM
+  if (addr >= 0x6000 && addr <= 0x7FFF) {
+    return this.fds.cpuRead(addr);
+  }
+
+  // FDS BIOS
+  if (addr >= 0xE000) {
+    return this.fds.cpuRead(addr);
+  }
+}
+
+ 
     if (addr < 0x2000) return this.cpuRAM[addr & 0x7ff];
     if (addr < 0x4000) return this.ppu.cpuRead(0x2000 + (addr & 7));
  if (addr >= 0x4000 && addr <= 0x4015) return this.apu.read(addr);
     if (addr === 0x4016) return this.ctrl1.read();
     if (addr === 0x4017) return this.apu.read(addr); // ←超重要;
+     if (this.mapper) {
     if (addr >= 0x6000 && addr < 0x8000) return this.mapper.cpuRead(addr);
     if (addr >= 0x8000) return this.mapper.cpuRead(addr);
-   
+  }
+
     return 0;
   }
 
   cpuWrite(addr, val) {
     addr &= 0xffff;
     val &= 0xff;
+   if (this.fds) {
+    if (addr >= 0x4020 && addr <= 0x402F) {
+      this.fds.ioWrite(addr, val);
+      return;
+    }
+    if (addr >= 0x6000) {
+      this.fds.cpuWrite(addr, val);
+      return;
+    }
+  }
+  
     if (addr < 0x2000) {
       this.cpuRAM[addr & 0x7ff] = val;
       return;
@@ -4031,6 +4154,8 @@ class Bus {
       this.ctrl2.write(val);
       return;
     }
+    if (this.mapper) {
+
     if (addr >= 0x6000 && addr < 0x8000) {
       this.mapper.cpuWrite(addr, val);
       return;
@@ -4040,20 +4165,40 @@ class Bus {
       return;
     }
   }
+  }
 
   cartCHRRead(addr) {
+    if (this.fds) {
+    return this.fds.ppuRead(addr);
+  }
+  if (this.mapper) {
     return this.mapper.ppuRead(addr);
+  }
+    //return this.mapper.ppuRead(addr);
+    return 0;
   }
   
   cartCHRWrite(addr, val) {
+    if (this.fds) {
+    this.fds.ppuWrite(addr, val);
+    return;
+  }
+
+  if (this.mapper) {
     this.mapper.ppuWrite(addr, val);
+  }
+   // this.mapper.ppuWrite(addr, val);
   }
   
   ntMirror(addr) {
+if (!this.mapper) {
+    return (addr - 0x2000) & 0x0FFF; // FDS用
+  }
     const a = (addr - 0x2000) & 0x0fff;
     const table = (a >> 10) & 3;
     const offset = a & 0x03ff;
-    const m = this.mapper.mirroring();
+   const m = this.mapper ? this.mapper.mirroring() : 0;
+
     const map = m === 0 ? [0, 0, 1, 1] : [0, 1, 0, 1];
     return map[table] * 0x400 + offset;
   }
@@ -4079,6 +4224,311 @@ class Bus {
   
  
 }
+class FDS {
+  constructor(bus, bios, disk,cpu) {
+    this.bus = bus;
+    this.bios = bios; // 8KB
+    this.disk = disk; // .fds raw
+    this.cpu = cpu;
+    // ★ RAM初期化を修正
+   this.ram = new Uint8Array(0x8000); // 8KB
+
+    this.ram.fill(0xFF); // ← 0x00ではなく0xFFで初期化
+// FDS RAM (battery-backed)
+this.fakeRamValue = 0x00;
+
+
+    this.chr = new Uint8Array(0x2000); // ★ 8KB CHR-RAM
+    // Disk state
+if (this.disk[0] === 0x46 && this.disk[1] === 0x44 && this.disk[2] === 0x53) {
+        this.dataOffset = 0x10;
+        console.log("[FDS] Header detected. Offset = 16");
+    } else {
+        this.dataOffset = 0x00;
+        console.log("[FDS] No header detected. Offset = 0");
+    }
+    this.diskPtr = 0x10;
+    this.motorOn = false;
+    this.irqEnabled = false;
+    this.bus.irqLine = false;
+
+
+    this.dataReady = true;
+    this.irqFlag = false;
+this.reset();
+  }
+reset() {
+    this.ram.fill(0x00);
+    // 初期化時は判定したオフセットを使用
+    this.diskPtr = this.dataOffset; 
+    this.resetTransfer = false; 
+    this.motorOn = false;
+    this.irqEnabled = false;
+    this.timerIrq = false;
+    this.transferIrq = false;
+    this.writeSkip = 0;
+    this.diskInserted = true; // ディスク挿入状態
+    this.transferCycles = 0;
+  }
+  tick(cycles) {
+    if (this.motorOn) {
+        this.transferCycles -= cycles;
+        if (this.transferCycles <= 0) {
+            this.transferCycles = 150; // 約150〜200サイクルごとに1バイト準備
+            this.dataReady = true;
+            if (this.irqEnabled) {
+                this.irqFlag = true;
+                this.bus.requestIRQ(); // CPUに割り込みをかける
+            }
+        }
+    }
+}
+initBatteryRAM() {
+    // BIOSが期待するバッテリーRAMの署名
+    // 通常、未初期化状態では特定のパターンが必要
+    // または、前回のセーブデータがある状態をシミュレート
+    
+    // オプション1: 空の署名（新品ディスク扱い）
+    this.ram[0x0000] = 0x00; // $6000
+    this.ram[0x0001] = 0x00; // $6001
+    this.ram[0x0002] = 0x00; // $6002
+    
+    // オプション2: 有効な署名（既存データ扱い）
+    // より確実なのはこちら
+    this.ram[0x0000] = 0x53; // 'S'
+    this.ram[0x0001] = 0x41; // 'A'
+    this.ram[0x0002] = 0x56; // 'V'
+    this.ram[0x0003] = 0x00;
+  }
+ioRead(addr) {
+  
+// BIOS battery check workaround
+if (addr >= 0x6000 && addr <= 0x7FFF) {
+    return this.ram[addr - 0x6000] & 0xFF;
+}
+
+  switch (addr) {
+
+  case 0x4030: { // データ読み込み
+  const data = this.disk[this.diskPtr] ?? 0x00;
+console.log("0x4030");
+ if (this.motorOn) {
+        this.diskPtr++;
+        this.dataReady = false; // ★重要：読んだのでフラグを下ろす
+        this.irqFlag = false;   // ★重要：IRQを解除
+        this.bus.irqLine = false; 
+    }
+  // 即次が読めるようにする（BIOS騙し用）
+ // if (this.motorOn) {
+ //   this.diskPtr++;
+ //   this.dataReady = true;   // motorOn のときだけ true
+ // } else {
+ //   this.dataReady = false;
+//  }
+
+  this.irqFlag = false;
+ 
+  return data;
+}
+
+
+
+
+
+    case 0x4031: // ディスクステータス
+  let s4031 = 0x00;
+console.log("0x4031");
+  if (this.irqFlag) s4031 |= 0x80;    // Bit7: IRQ
+  if (this.dataReady) s4031 |= 0x02; // Bit1: Data Ready
+  this.irqFlag = false;
+  this.bus.irqLine = false;
+  return s4031;
+
+
+   
+
+ 
+
+    case 0x4032:
+  let v = 0x00; // bit6: Disk inserted
+
+  if (!this.motorOn) {
+console.log("ready");
+    v |= 0x02;  // bit0: Ready
+  }
+ 
+v |= 0x40;
+ 
+
+  return v;
+
+
+
+  case 0x4023: {
+  let v = 0x40; // bit6 = disk inserted
+
+  if (this.dataReady) v |= 0x01; // bit0
+  if (this.irqFlag)   v |= 0x02; // bit1
+
+  console.log(
+    "[FDS] READ 4023",
+    "PC=" + this.bus.cpu.PC.toString(16),
+    "val=" + v.toString(16)
+  );
+
+  return v;
+}
+
+
+
+
+    case 0x4033: // External connector
+      //return 0x80;
+      return 0x81; 
+case 0x4024:
+case 0x4026: // IRQ RESET
+  console.log("[FDS] WRITE 4026 IRQ RESET PC=" + this.bus.cpu.PC.toString(16));
+  this.irqFlag = false;
+  this.bus.irqLine = false; // ← ★ これが無かった
+  break;
+
+case 0x4027:
+  return 0x00;
+
+    case 0x4021: // Data read
+      if (!this.motorOn) return 0;
+
+      const d = this.disk[this.diskPtr++] ?? 0;
+console.log(
+      "[FDS] READ 4021",
+      "PC=" + this.cpu.PC.toString(16),
+      "ptr=" + this.diskPtr,
+      "data=" + d.toString(16)
+    );
+      // データを読んだら一旦 ready を落とす
+      this.dataReady = false;
+      this.irqFlag = true; // ★ BIOSが次に見る
+this.bus.requestIRQ();
+  this.irqFlag = true;
+  this.dataReady = true;
+      return d;
+  }
+
+  return 0;
+}
+
+
+ioWrite(addr, val) {
+ 
+    if (addr >= 0x6000 && addr <= 0x7FFF) {
+    this.ram[addr - 0x6000] = val & 0xFF;
+    return;
+  }
+  switch (addr) {
+   case 0x4025:
+  this.motorOn = (val & 0x01) !== 0; // ★ bit1
+
+  this.irqEnabled = (val & 0x81) !== 0;  // bit1
+  const reset = (val & 0x04) !== 0;      // bit2
+
+  if (reset) {
+    this.diskPtr = this.dataOffset; 
+
+
+    this.dataReady = false;
+    this.irqFlag = false;
+    this.bus.irqLine = false;
+  }
+  if (val & 0x04) {
+        this.diskPtr = this.dataOffset;
+        this.dataReady = false;
+    }
+if (this.motorOn) {
+this.diskPtr = this.dataOffset; 
+
+
+    this.dataReady = true;
+  }
+  console.log(
+    "[FDS] WRITE 4025",
+    "PC=" + this.cpu.PC.toString(16),
+    "val=" + val.toString(16),
+    "motorOn=" + this.motorOn,
+    "diskPtr=" + this.diskPtr
+  );
+
+  
+  break;
+
+
+    case 0x4026: // IRQ reset
+      this.irqFlag = false;
+      console.log(
+        "[FDS] WRITE 4026 IRQ RESET",
+        "PC=" + this.cpu.PC.toString(16)
+      );
+      break;
+  
+
+case 0x4020: // IRQ制御
+      this.irqEnabled = (val & 0x01) !== 0;
+      
+      if (val & 0x01) {
+        // IRQ有効化
+        this.irqFlag = false;
+      } else {
+        // IRQ無効化・クリア
+        this.irqFlag = false;
+      }
+      
+      console.log(
+        "[FDS] WRITE 4020 IRQ CONTROL",
+        "PC=" + this.cpu.PC.toString(16),
+        "val=" + val.toString(16),
+        "enabled=" + this.irqEnabled
+      );
+      break;
+
+    case 0x4024: // Disk write data
+      if (this.motorOn && this.diskPtr < this.disk.length) {
+        this.disk[this.diskPtr++] = val & 0xFF;
+      }
+      break;
+
+}}
+
+ppuRead(addr) {
+    return this.chr[addr & 0x1FFF];
+  }
+
+  ppuWrite(addr, val) {
+    this.chr[addr & 0x1FFF] = val;
+  }
+  cpuRead(addr) {
+    // 1. FDS RAM 領域: $6000 - $DFFF (32KB)
+    if (addr >= 0x6000 && addr <= 0xDFFF) {
+        return this.ram[addr - 0x6000];
+    }
+    // 2. BIOS ROM 領域: $E000 - $FFFF (8KB)
+    if (addr >= 0xE000) {
+        return this.bios[addr - 0xE000];
+    }
+    return 0;
+}
+
+cpuWrite(addr, val) {
+    // FDS RAM 領域への書き込み: $6000 - $DFFF
+    if (addr >= 0x6000 && addr <= 0xDFFF) {
+        this.ram[addr - 0x6000] = val & 0xFF;
+        // ログが多すぎる場合は、動作確認後に下の1行を消してください
+        // console.log("[FDS RAM WRITE]", addr.toString(16), val.toString(16));
+    }
+
+   
+   
+  }
+}
+
       // NESのボタン名とキーコードの対応
       const keyMapP1 = {
         KeyX: "A", // Aボタン
@@ -4195,6 +4645,7 @@ let sameCount = 0;
         
           this.cpu = new CPU(this.bus);
           this.ppu = this.bus.ppu;
+          
           this.running = false;
         }
         loadCartridge(bytes) {
@@ -4207,7 +4658,13 @@ let sameCount = 0;
           this.cpu.reset();
           //this.ppu.reset();
         }
-
+        loadDisk(bytes){
+          this.fds = new FDS(this.bus, fdsBios, fdsDisk,this.cpu)
+          const cart = new Cartridge(fdsDisk);
+          this.bus.attachFDS(this.fds,cart);
+          this.bus.apu.initAudio();
+          this.cpu.reset(0xE000); 
+        }
         // === NES.stepFrame の安全化（step を二回呼んでいる箇所を修正、PC 繰り返し検出を追加） ===
         stepFrame() {
             const pc = this.cpu.PC;
@@ -4229,12 +4686,13 @@ if (!this.ppu.consumeFrameFlag())
 
   while (!this.ppu.consumeFrameFlag()) {
     const cpuCycles = this.cpu.step(); // CPU が消費したサイクル数
-    
+    this.fds.tick(cpuCycles);
     for(let i = 0; i < cpuCycles; i++){
 this.bus.apu.step();
 this.ppu.step();
 this.ppu.step();
 this.ppu.step();
+
 }
     // NES: CPU 1 cycle = PPU 3 cycles
     
@@ -4358,9 +4816,45 @@ function handlePadInput(pad) {
       let lastTime = performance.now();
       let frames = 0,
         lastFpsTime = lastTime;
+document.getElementById("fdsBios").addEventListener("change", e => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  file.arrayBuffer().then(buf => {
+    fdsBios = new Uint8Array(buf);
+    console.log("[FDS] BIOS loaded:", fdsBios.length);
+  });
+});
+
+
+document.getElementById("fdsDisk").addEventListener("change", e => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  file.arrayBuffer().then(buf => {
+    const raw = new Uint8Array(buf);
+    fdsDisk = raw;
+    console.log("[FDS] Disk loaded:", raw.length);
+  });
+});
+
 
       startBtn.addEventListener("click", () => {
         try {
+          console.log(fdsBios, fdsDisk);
+          if (fdsBios && fdsDisk) {
+            nes = new NES();
+    isFDS = true;
+
+
+    //let fds = new FDS(nes.bus, fdsBios, fdsDisk);
+    nes.loadDisk(null);
+    //nes.cpu.reset(0xE000); // BIOS entry
+    nes.stepFrame();
+
+          loop();
+  } else {
+     isFDS = false;
           nes = new NES();
 
           nes.loadCartridge(romBytes);
@@ -4370,6 +4864,7 @@ function handlePadInput(pad) {
           loop();
 
           status.textContent = "Running (skeleton)";
+  }
         } catch (e) {
           console.error(e);
           status.textContent = "Error: " + e.message;
