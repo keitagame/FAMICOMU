@@ -2811,7 +2811,7 @@ class CPU {
   this.pendingNMI = false;
   this.pendingIRQ = false;
 
-  console.log("RESET PC =", this.PC.toString(16));
+  
 }
 
 
@@ -4066,14 +4066,7 @@ this.cartridge = null;
   cpuRead(addr) {
     addr &= 0xffff;
     if (addr >= 0x6000 && addr <= 0x7FFF) {
-    console.log(
-      "BUS READ",
-      addr.toString(16),
-      "fds=",
-      !!this.fds,
-      "mapper=",
-      !!this.mapper
-    );}
+    }
     if (this.fds) {
   // FDS I/O
   if (addr >= 0x4031 && addr <= 0x4033) {
@@ -4242,10 +4235,10 @@ this.fakeRamValue = 0x00;
     // Disk state
 if (this.disk[0] === 0x46 && this.disk[1] === 0x44 && this.disk[2] === 0x53) {
         this.dataOffset = 0x10;
-        console.log("[FDS] Header detected. Offset = 16");
+        
     } else {
         this.dataOffset = 0x00;
-        console.log("[FDS] No header detected. Offset = 0");
+       
     }
     this.diskPtr = 0x10;
     this.motorOn = false;
@@ -4271,17 +4264,7 @@ reset() {
     this.transferCycles = 0;
   }
   tick(cycles) {
-    if (this.motorOn) {
-        this.transferCycles -= cycles;
-        if (this.transferCycles <= 0) {
-            this.transferCycles = 150; // 約150〜200サイクルごとに1バイト準備
-            this.dataReady = true;
-            if (this.irqEnabled) {
-                this.irqFlag = true;
-                this.bus.requestIRQ(); // CPUに割り込みをかける
-            }
-        }
-    }
+    
 }
 initBatteryRAM() {
     // BIOSが期待するバッテリーRAMの署名
@@ -4311,7 +4294,7 @@ if (addr >= 0x6000 && addr <= 0x7FFF) {
 
   case 0x4030: { // データ読み込み
   const data = this.disk[this.diskPtr] ?? 0x00;
-console.log("0x4030");
+
  if (this.motorOn) {
         this.diskPtr++;
         this.dataReady = false; // ★重要：読んだのでフラグを下ろす
@@ -4337,7 +4320,7 @@ console.log("0x4030");
 
     case 0x4031: // ディスクステータス
   let s4031 = 0x00;
-console.log("0x4031");
+
   if (this.irqFlag) s4031 |= 0x80;    // Bit7: IRQ
   if (this.dataReady) s4031 |= 0x02; // Bit1: Data Ready
   this.irqFlag = false;
@@ -4353,7 +4336,7 @@ console.log("0x4031");
   let v = 0x00; // bit6: Disk inserted
 
   if (!this.motorOn) {
-console.log("ready");
+
     v |= 0x02;  // bit0: Ready
   }
  
@@ -4370,11 +4353,7 @@ v |= 0x40;
   if (this.dataReady) v |= 0x01; // bit0
   if (this.irqFlag)   v |= 0x02; // bit1
 
-  console.log(
-    "[FDS] READ 4023",
-    "PC=" + this.bus.cpu.PC.toString(16),
-    "val=" + v.toString(16)
-  );
+  
 
   return v;
 }
@@ -4387,7 +4366,7 @@ v |= 0x40;
       return 0x81; 
 case 0x4024:
 case 0x4026: // IRQ RESET
-  console.log("[FDS] WRITE 4026 IRQ RESET PC=" + this.bus.cpu.PC.toString(16));
+  
   this.irqFlag = false;
   this.bus.irqLine = false; // ← ★ これが無かった
   break;
@@ -4399,12 +4378,7 @@ case 0x4027:
       if (!this.motorOn) return 0;
 
       const d = this.disk[this.diskPtr++] ?? 0;
-console.log(
-      "[FDS] READ 4021",
-      "PC=" + this.cpu.PC.toString(16),
-      "ptr=" + this.diskPtr,
-      "data=" + d.toString(16)
-    );
+
       // データを読んだら一旦 ready を落とす
       this.dataReady = false;
       this.irqFlag = true; // ★ BIOSが次に見る
@@ -4449,13 +4423,7 @@ this.diskPtr = this.dataOffset;
 
     this.dataReady = true;
   }
-  console.log(
-    "[FDS] WRITE 4025",
-    "PC=" + this.cpu.PC.toString(16),
-    "val=" + val.toString(16),
-    "motorOn=" + this.motorOn,
-    "diskPtr=" + this.diskPtr
-  );
+  
 
   
   break;
@@ -4463,10 +4431,7 @@ this.diskPtr = this.dataOffset;
 
     case 0x4026: // IRQ reset
       this.irqFlag = false;
-      console.log(
-        "[FDS] WRITE 4026 IRQ RESET",
-        "PC=" + this.cpu.PC.toString(16)
-      );
+      
       break;
   
 
@@ -4481,12 +4446,7 @@ case 0x4020: // IRQ制御
         this.irqFlag = false;
       }
       
-      console.log(
-        "[FDS] WRITE 4020 IRQ CONTROL",
-        "PC=" + this.cpu.PC.toString(16),
-        "val=" + val.toString(16),
-        "enabled=" + this.irqEnabled
-      );
+      
       break;
 
     case 0x4024: // Disk write data
@@ -4673,8 +4633,6 @@ let sameCount = 0;
     if (pc === lastPC) {
       sameCount++;
       if (sameCount > 1000) {
-        console.error(`Stuck at PC=$${pc.toString(16).padStart(4, '0')}`);
-        console.error(`A=$${cpu.A.toString(16)} X=$${cpu.X.toString(16)} Y=$${cpu.Y.toString(16)}`);
         return; // 停止
       }
     } else {
@@ -4686,7 +4644,7 @@ if (!this.ppu.consumeFrameFlag())
 
   while (!this.ppu.consumeFrameFlag()) {
     const cpuCycles = this.cpu.step(); // CPU が消費したサイクル数
-    this.fds.tick(cpuCycles);
+    //this.fds.tick(cpuCycles);
     for(let i = 0; i < cpuCycles; i++){
 this.bus.apu.step();
 this.ppu.step();
@@ -4698,7 +4656,8 @@ this.ppu.step();
     
 
     if (++guard > 10_000_000) {
-      throw new Error("Frame step guard overflow");
+        console.warn("Infinite loop detected in NES.stepFrame");
+        break;
     }
   }
 
@@ -4822,7 +4781,7 @@ document.getElementById("fdsBios").addEventListener("change", e => {
 
   file.arrayBuffer().then(buf => {
     fdsBios = new Uint8Array(buf);
-    console.log("[FDS] BIOS loaded:", fdsBios.length);
+    
   });
 });
 
@@ -4834,14 +4793,14 @@ document.getElementById("fdsDisk").addEventListener("change", e => {
   file.arrayBuffer().then(buf => {
     const raw = new Uint8Array(buf);
     fdsDisk = raw;
-    console.log("[FDS] Disk loaded:", raw.length);
+   
   });
 });
 
 
       startBtn.addEventListener("click", () => {
         try {
-          console.log(fdsBios, fdsDisk);
+          
           if (fdsBios && fdsDisk) {
             nes = new NES();
     isFDS = true;
