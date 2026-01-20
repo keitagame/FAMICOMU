@@ -4231,7 +4231,7 @@ class FDS {
     this.disk = disk; // .fds raw
     this.cpu = cpu;
     // ★ RAM初期化を修正
-   this.ram = new Uint8Array(0x2000); // 8KB
+   this.ram = new Uint8Array(0x8000); // 8KB
 
     this.ram.fill(0xFF); // ← 0x00ではなく0xFFで初期化
 // FDS RAM (battery-backed)
@@ -4345,7 +4345,10 @@ console.log("0x4031");
   return s4031;
 
 
-    
+   
+
+ 
+
     case 0x4032:
   let v = 0x00; // bit6: Disk inserted
 
@@ -4353,6 +4356,7 @@ console.log("0x4031");
 console.log("ready");
     v |= 0x02;  // bit0: Ready
   }
+ 
 v |= 0x40;
  
 
@@ -4501,30 +4505,25 @@ ppuRead(addr) {
     this.chr[addr & 0x1FFF] = val;
   }
   cpuRead(addr) {
-     if (addr === 0xFFFC || addr === 0xFFFD) {
-    const v = this.bios[addr - 0xE000];
-    console.log(
-      "RESET VECTOR READ",
-      addr.toString(16),
-      v.toString(16)
-    );
-    return v;
-  }
-    if (addr >= 0x6000 && addr <= 0x7FFF) {
-    return this.ram[addr - 0x6000];
-  }
-  if (addr >= 0xE000) {
-    return this.bios[addr - 0xE000];
-  }
+    // 1. FDS RAM 領域: $6000 - $DFFF (32KB)
+    if (addr >= 0x6000 && addr <= 0xDFFF) {
+        return this.ram[addr - 0x6000];
+    }
+    // 2. BIOS ROM 領域: $E000 - $FFFF (8KB)
+    if (addr >= 0xE000) {
+        return this.bios[addr - 0xE000];
+    }
     return 0;
-  }
+}
 
-  cpuWrite(addr, val) {
-    if (addr >= 0x6000 && addr <= 0x7FFF) {
-    this.ram[addr - 0x6000] = val & 0xFF;
-    console.log("[FDS RAM WRITE]", addr.toString(16), val.toString(16));
-  }
-  
+cpuWrite(addr, val) {
+    // FDS RAM 領域への書き込み: $6000 - $DFFF
+    if (addr >= 0x6000 && addr <= 0xDFFF) {
+        this.ram[addr - 0x6000] = val & 0xFF;
+        // ログが多すぎる場合は、動作確認後に下の1行を消してください
+        // console.log("[FDS RAM WRITE]", addr.toString(16), val.toString(16));
+    }
+
    
    
   }
