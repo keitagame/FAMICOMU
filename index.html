@@ -4246,7 +4246,7 @@ this.diskWait = 0;
 
     this.dataReady = false;
     this.irqFlag = false;
-this.headResetDelay = 20000;
+this.headResetDelay = 50;
 this.reset();
   }
 reset() {
@@ -4269,14 +4269,15 @@ if (this.diskWait > 0) {
     return;
   }
   /* ---- ヘッドリセット ---- */
-  if (this.headAtReset) {
-    this.headResetDelay -= cycles;
-    if (this.headResetDelay <= 0) {
-      this.headAtReset = false;
-      this.transferCycles = 0;
-    }
-    return; // ★ reset中は何もしない
+  // tick()
+if (this.headAtReset) {
+  this.headResetDelay--;
+  if (this.headResetDelay <= 0) {
+    this.headAtReset = false;
   }
+  return;
+}
+
 
   /* ---- 転送タイミング ---- */
   this.transferCycles += cycles;
@@ -4288,8 +4289,12 @@ if (this.diskWait > 0) {
     if (!this.dataReady && this.diskPtr < this.disk.length) {
 console.log("0.2");
       this.dataReady = true;
+if (this.irqEnabled) {
       this.irqFlag = true;
       this.bus.requestIRQ();
+    }
+      //this.irqFlag = true;
+      //this.bus.requestIRQ();
 this.diskWait = 150;
     }
   }
@@ -4310,6 +4315,7 @@ ioRead(addr) {
 
 
   switch (addr) {
+
 
   case 0x4030: { // データ読み込み
 console.log("4030");
@@ -4332,8 +4338,8 @@ this.dataReady = false;
 console.log("1");
   if (this.irqFlag) s4031 |= 0x80;    // Bit7: IRQ
   if (this.dataReady) s4031 |= 0x02; // Bit1: Data Ready
-  this.irqFlag = false;
-  this.bus.irqLine = false;
+ // this.irqFlag = false;
+  //this.bus.irqLine = false;
   return s4031;
 
 case 0x4032: {
@@ -4399,19 +4405,7 @@ case 0x4026: // IRQ RESET
 case 0x4027:
   return 0x00;
 
-    case 0x4021: // Data read
-      if (!this.motorOn) return 0;
-
-      const d = this.disk[this.diskPtr++] ?? 0;
-
-      // データを読んだら一旦 ready を落とす
-      this.dataReady = false;
-      this.irqFlag = true; // ★ BIOSが次に見る
-this.bus.requestIRQ();
-  this.irqFlag = true;
-  this.dataReady = true;
-      return d;
-  }
+   }
 
   return 0;
 }
@@ -4427,12 +4421,7 @@ ioWrite(addr, val) {
 
   this.irqEnabled = (val & 0x80) !== 0;  // bit1
   const reset = (val & 0x04) !== 0;      // bit2
-if (!(val & 0x02)) {
-        this.diskPtr = this.dataOffset; // ここで 0x10 (または0) に戻す
-        this.dataReady = false;
-        this.irqFlag = false;
-        this.bus.irqLine = false;
-    }
+
   if (reset) {
     this.diskPtr = this.dataOffset; 
 
