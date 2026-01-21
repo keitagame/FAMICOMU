@@ -4242,6 +4242,7 @@ if (this.disk[0] === 0x46 && this.disk[1] === 0x44 && this.disk[2] === 0x53) {
     this.bus.irqLine = false;
 
 this.headAtReset = true;
+this.diskWait = 0;
 
     this.dataReady = false;
     this.irqFlag = false;
@@ -4263,7 +4264,10 @@ reset() {
   }
  tick(cycles) {
   if (!this.motorOn) return;
-
+if (this.diskWait > 0) {
+    this.diskWait--;
+    return;
+  }
   /* ---- ヘッドリセット ---- */
   if (this.headAtReset) {
     this.headResetDelay -= cycles;
@@ -4282,9 +4286,11 @@ reset() {
 
     // ★ ここが超重要
     if (!this.dataReady && this.diskPtr < this.disk.length) {
+console.log("0.2");
       this.dataReady = true;
       this.irqFlag = true;
       this.bus.requestIRQ();
+this.diskWait = 150;
     }
   }
 }
@@ -4306,8 +4312,9 @@ ioRead(addr) {
   switch (addr) {
 
   case 0x4030: { // データ読み込み
+console.log("4030");
   const data = this.disk[this.diskPtr] ?? 0x00;
-
+this.dataReady = false;
  if (this.motorOn) {
         this.diskPtr++;
         this.dataReady = false; // ★重要：読んだのでフラグを下ろす
@@ -4439,7 +4446,7 @@ if (!(val & 0x02)) {
         this.dataReady = false;
     }
 if (this.motorOn) {
-    this.dataReady = true;
+    this.dataReady = false;
   }
   
 
