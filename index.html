@@ -2998,7 +2998,11 @@ class CPU {
  const before = this.cycles;
 
     // Handle pending interrupts
-   
+   // CPU.step() の最初あたり
+
+ 
+
+
 
     const op = this.fetch();
     const entry = this.opcodes[op];
@@ -4224,7 +4228,7 @@ class FDS {
     this.disk = disk; // .fds raw
     this.cpu = cpu;
     // ★ RAM初期化を修正
-   this.ram = new Uint8Array(0x8000); // 8KB
+   this.ram = new Uint8Array(0x8000); 
 
     this.ram.fill(0xFF); // ← 0x00ではなく0xFFで初期化
 // FDS RAM (battery-backed)
@@ -4251,7 +4255,7 @@ if (this.disk[0] === 0x46 && this.disk[1] === 0x44 && this.disk[2] === 0x53) {
 this.reset();
   }
 reset() {
-    this.ram.fill(0x00);
+    
     // 初期化時は判定したオフセットを使用
     this.diskPtr = this.dataOffset; 
     this.resetTransfer = false; 
@@ -4263,21 +4267,23 @@ reset() {
     this.diskInserted = true; // ディスク挿入状態
     this.transferCycles = 0;
   }
-  tick(cycles) {
-    
+ tick(cycles) {
+    if (!this.motorOn) return;
+
+    this.transferCycles += cycles;
+
+    if (this.transferCycles >= 150) {
+        this.transferCycles -= 150;
+        this.dataReady = true;
+        if (this.irqEnabled) {
+            this.irqFlag = true;
+            this.bus.requestIRQ();
+        }
+    }
 }
+
 initBatteryRAM() {
-    // BIOSが期待するバッテリーRAMの署名
-    // 通常、未初期化状態では特定のパターンが必要
-    // または、前回のセーブデータがある状態をシミュレート
     
-    // オプション1: 空の署名（新品ディスク扱い）
-    this.ram[0x0000] = 0x00; // $6000
-    this.ram[0x0001] = 0x00; // $6001
-    this.ram[0x0002] = 0x00; // $6002
-    
-    // オプション2: 有効な署名（既存データ扱い）
-    // より確実なのはこちら
     this.ram[0x0000] = 0x53; // 'S'
     this.ram[0x0001] = 0x41; // 'A'
     this.ram[0x0002] = 0x56; // 'V'
@@ -4414,13 +4420,10 @@ ioWrite(addr, val) {
     this.bus.irqLine = false;
   }
   if (val & 0x04) {
-        this.diskPtr = this.dataOffset;
+        //this.diskPtr = this.dataOffset;
         this.dataReady = false;
     }
 if (this.motorOn) {
-this.diskPtr = this.dataOffset; 
-
-
     this.dataReady = true;
   }
   
@@ -4483,9 +4486,6 @@ cpuWrite(addr, val) {
         // ログが多すぎる場合は、動作確認後に下の1行を消してください
         // console.log("[FDS RAM WRITE]", addr.toString(16), val.toString(16));
     }
-
-   
-   
   }
 }
 
@@ -4625,8 +4625,7 @@ let sameCount = 0;
           this.bus.apu.initAudio();
           this.cpu.reset(0xE000); 
         }
-        // === NES.stepFrame の安全化（step を二回呼んでいる箇所を修正、PC 繰り返し検出を追加） ===
-        stepFrame() {
+         stepFrame() {
             const pc = this.cpu.PC;
     
     // 無限ループ検出
@@ -4639,36 +4638,63 @@ let sameCount = 0;
       lastPC = pc;
       sameCount = 0;
     }
-  let guard = 0;
-if (!this.ppu.consumeFrameFlag()) 
+ let guard = 0;
 
-  while (!this.ppu.consumeFrameFlag()) {
-    const cpuCycles = this.cpu.step(); // CPU が消費したサイクル数
-    //this.fds.tick(cpuCycles);
-    for(let i = 0; i < cpuCycles; i++){
-this.bus.apu.step();
-this.ppu.step();
-this.ppu.step();
-this.ppu.step();
+while (!this.ppu.consumeFrameFlag()) {
+    const cpuCycles = this.cpu.step();
 
-}
-    // NES: CPU 1 cycle = PPU 3 cycles
     
+
+    for (let i = 0; i < cpuCycles; i++) {
+        this.bus.apu.step();
+        this.ppu.step();
+        this.ppu.step();
+        this.ppu.step();
+    }
 
     if (++guard > 10_000_000) {
         console.warn("Infinite loop detected in NES.stepFrame");
         break;
     }
   }
-
-  // フレーム消費
-  this.ppu.frameReady = false;
-
-  // ここでは「描画しない」
-  // framebuffer はすでに完成している
 }
 
+        // === NES.stepFrame の安全化（step を二回呼んでいる箇所を修正、PC 繰り返し検出を追加） ===
+        stepFDS() {
+            const pc = this.cpu.PC;
+    
+    // 無限ループ検出
+    if (pc === lastPC) {
+      sameCount++;
+      if (sameCount > 1000) {
+        return; // 停止
       }
+    } else {
+      lastPC = pc;
+      sameCount = 0;
+    }
+  
+ let guard = 0;
+
+while (!this.ppu.consumeFrameFlag()) {
+    const cpuCycles = this.cpu.step();
+
+    this.bus.fds.tick(cpuCycles);
+
+    for (let i = 0; i < cpuCycles; i++) {
+        this.bus.apu.step();
+        this.ppu.step();
+        this.ppu.step();
+        this.ppu.step();
+    }
+
+    if (++guard > 10_000_000) {
+        console.warn("Infinite loop detected in NES.stepFrame");
+        break;
+    }
+  }
+}
+  }    
       // ---------- UI / Main loop ----------
       const canvas = document.getElementById("screen");
       const ctx = canvas.getContext("2d", { alpha: true });
@@ -4809,7 +4835,7 @@ document.getElementById("fdsDisk").addEventListener("change", e => {
     //let fds = new FDS(nes.bus, fdsBios, fdsDisk);
     nes.loadDisk(null);
     //nes.cpu.reset(0xE000); // BIOS entry
-    nes.stepFrame();
+    nes.stepFDS();
 
           loop();
   } else {
