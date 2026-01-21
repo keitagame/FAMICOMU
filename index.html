@@ -1017,6 +1017,7 @@ class Mapper20 extends IMapper {
 
   cpuRead(addr) {
     // BIOS ROM
+    
     if (addr >= 0xE000) {
       return this.bios[addr - 0xE000]
     }
@@ -2805,8 +2806,8 @@ class CPU {
   this.X = 0;
   this.Y = 0;
   this.S = 0xFD;
-  this.P = 0x24;
-
+ 
+this.P = 0x34;
   this.cycles = 7;
   this.pendingNMI = false;
   this.pendingIRQ = false;
@@ -3002,7 +3003,14 @@ class CPU {
 
  
 
-
+if (this.bus.takeNMI()) {
+      this.nmi();
+      return 7; // NMI自体のサイクル
+    }
+    if (this.bus.takeIRQ() && !this.I) {
+      this.irq();
+      return 7; // IRQ自体のサイクル
+    }
 
     const op = this.fetch();
     const entry = this.opcodes[op];
@@ -3016,8 +3024,7 @@ class CPU {
 
     const cycleBefore = this.cycles;
     entry.call(this);
-     if (this.bus.takeNMI()) this.nmi();
-    else if (this.bus.takeIRQ()) this.irq();
+     
     // cycTable からベースサイクルを加算（命令内で追加サイクルが加算済み）
     const used = this.cycTable[op];
   this.cycles += used;
@@ -3079,21 +3086,7 @@ class CPU {
 };
 
     // Branch helper
-   const BaR = (cond) => {
-    const offRaw = this.rel(); // 1バイト読み込み
-const off = (offRaw & 0x80) ? (offRaw - 256) : offRaw; // 符号拡張
-
-  //const off = this.rel();
-  if (cond) {
-    const base = this.PC; // ← offset fetch 後の PC
-    const dest = (base + off) & 0xffff;
-    if ((base & 0xff00) !== (dest & 0xff00)) {
-      this.cycles++;
-    }
-    this.PC = dest;
-    this.cycles++;
-  }
-};
+   
 
 
     // BIT instruction
@@ -4072,23 +4065,19 @@ this.cartridge = null;
     if (addr >= 0x6000 && addr <= 0x7FFF) {
     }
     if (this.fds) {
-  // FDS I/O
-  if (addr >= 0x4031 && addr <= 0x4033) {
-    return this.fds.ioRead(addr);
-  }
-if (isFDS && addr === 0x4030) {
-    return 0x80   // ★ bit7=1 → ディスク挿入済み
-  }
-  // FDS RAM
-  if (addr >= 0x6000 && addr <= 0x7FFF) {
-    return this.fds.cpuRead(addr);
-  }
-
-  // FDS BIOS
-  if (addr >= 0xE000) {
-    return this.fds.cpuRead(addr);
-  }
-}
+      // FDS I/O 領域を 0x4030 からにする
+      if (addr >= 0x4030 && addr <= 0x4033) {
+        return this.fds.ioRead(addr);
+      }
+      // FDS RAM ($6000-$DFFF)
+      if (addr >= 0x6000 && addr <= 0xDFFF) { // 範囲をDFFFまで広げる
+        return this.fds.cpuRead(addr);
+      }
+      // FDS BIOS
+      if (addr >= 0xE000) {
+        return this.fds.cpuRead(addr);
+      }
+    }
 
  
     if (addr < 0x2000) return this.cpuRAM[addr & 0x7ff];
@@ -4274,10 +4263,13 @@ reset() {
 
     if (this.transferCycles >= 150) {
         this.transferCycles -= 150;
-        this.dataReady = true;
-        if (this.irqEnabled) {
-            this.irqFlag = true;
-            this.bus.requestIRQ();
+if (this.diskPtr < this.disk.length) {
+  
+            this.dataReady = false; // BIOSが待っているフラグ
+            if (this.irqEnabled) {
+                this.irqFlag = true;
+                this.bus.requestIRQ();
+            }
         }
     }
 }
@@ -4307,22 +4299,11 @@ if (addr >= 0x6000 && addr <= 0x7FFF) {
         this.irqFlag = false;   // ★重要：IRQを解除
         this.bus.irqLine = false; 
     }
-  // 即次が読めるようにする（BIOS騙し用）
- // if (this.motorOn) {
- //   this.diskPtr++;
- //   this.dataReady = true;   // motorOn のときだけ true
- // } else {
- //   this.dataReady = false;
-//  }
-
+ 
   this.irqFlag = false;
  
   return data;
 }
-
-
-
-
 
     case 0x4031: // ディスクステータス
   let s4031 = 0x00;
@@ -4333,25 +4314,32 @@ if (addr >= 0x6000 && addr <= 0x7FFF) {
   this.bus.irqLine = false;
   return s4031;
 
+case 0x4032: {
+    // FDSのステータスは「0」がアクティブな項目が多い
+    // Bit 6 は常に 1 (ディスクドライブの存在)
+    let v = 0x40; 
 
-   
+    // Bit 0: 0=Ready (挿入済み), 1=Not Ready
+    // ここを 1 にすると BIOS は「ディスクを入れろ」と言い、
+    // 0 にすると「Now Loading」に進みます。
+    if (!this.diskInserted) {
+        v |= 0x01; 
+    }
 
- 
+    // Bit 1: 0=スキャン中(ヘッドがデータ領域にある), 1=リセット位置
+    // BIOS はここが 1 から 0 に変わることで「回転が安定した」と判断することがあります。
+    if (this.diskPtr === this.dataOffset) {
+        v |= 0x02;
+    } else {
+        // 読み込みが始まっている（ptrが進んでいる）なら 0 にする
+        v &= ~0x02;
+    }
 
-    case 0x4032:
-  let v = 0x00; // bit6: Disk inserted
+    // Bit 2: 0=書き込み可, 1=書き込み禁止
+    // v |= 0x04; // セーブできない場合はここをコメントアウト
 
-  if (!this.motorOn) {
-
-    v |= 0x02;  // bit0: Ready
-  }
- 
-v |= 0x40;
- 
-
-  return v;
-
-
+    return v;
+}
 
   case 0x4023: {
   let v = 0x40; // bit6 = disk inserted
@@ -4363,9 +4351,6 @@ v |= 0x40;
 
   return v;
 }
-
-
-
 
     case 0x4033: // External connector
       //return 0x80;
@@ -4396,8 +4381,6 @@ this.bus.requestIRQ();
 
   return 0;
 }
-
-
 ioWrite(addr, val) {
  
     if (addr >= 0x6000 && addr <= 0x7FFF) {
@@ -4408,9 +4391,14 @@ ioWrite(addr, val) {
    case 0x4025:
   this.motorOn = (val & 0x01) !== 0; // ★ bit1
 
-  this.irqEnabled = (val & 0x81) !== 0;  // bit1
+  this.irqEnabled = (val & 0x80) !== 0;  // bit1
   const reset = (val & 0x04) !== 0;      // bit2
-
+if (!(val & 0x02)) {
+        this.diskPtr = this.dataOffset; // ここで 0x10 (または0) に戻す
+        this.dataReady = false;
+        this.irqFlag = false;
+        this.bus.irqLine = false;
+    }
   if (reset) {
     this.diskPtr = this.dataOffset; 
 
@@ -4869,7 +4857,11 @@ const recCtx  = recCanvas.getContext("2d", { alpha:false });
 recCtx.imageSmoothingEnabled  = false;
       function loop() {
         try {
+          if(!isFDS){
           nes.stepFrame();
+}else{
+nes.stepFDS();
+}
         } catch (e) {
           status.textContent = "Stopped: " + e.message;
           return;
