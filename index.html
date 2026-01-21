@@ -4245,7 +4245,7 @@ this.headAtReset = true;
 
     this.dataReady = false;
     this.irqFlag = false;
-this.headResetDelay = 1000000;
+this.headResetDelay = 20000;
 this.reset();
   }
 reset() {
@@ -4262,32 +4262,33 @@ reset() {
     this.transferCycles = 0;
   }
  tick(cycles) {
+  if (!this.motorOn) return;
 
-    
-
-
+  /* ---- ヘッドリセット処理 ---- */
+  if (this.headAtReset) {
     this.headResetDelay -= cycles;
-
     if (this.headResetDelay <= 0) {
-//console.log("0");
-      this.headAtReset = false; // ★ ここで初めて 1→0
+      this.headAtReset = false;   // ★ BIOSが待っている遷移
+      this.transferCycles = 0;    // ★ 転送タイミングをここから数える
     }
-if (!this.motorOn) return;
+    return; // ★ 重要：リセット中は転送しない
+  }
 
-    this.transferCycles += cycles;
+  /* ---- データ転送 ---- */
+  this.transferCycles += cycles;
 
-    if (this.transferCycles >= 150) {
-        this.transferCycles -= 150;
-if (this.diskPtr < this.disk.length) {
-  console.log("3");
-            this.dataReady = true; // BIOSが待っているフラグ
-            //if (this.irqEnabled) {
-                this.irqFlag = true;
-                this.bus.requestIRQ();
-            //}
-        }
+  if (this.transferCycles >= 150) {
+    this.transferCycles -= 150;
+
+    if (!this.dataReady && this.diskPtr < this.disk.length) {
+      console.log("3");
+      this.dataReady = true;
+      this.irqFlag = true;
+      this.bus.requestIRQ();
     }
+  }
 }
+
 
 initBatteryRAM() {
     
@@ -4299,9 +4300,7 @@ initBatteryRAM() {
 ioRead(addr) {
   
 // BIOS battery check workaround
-if (addr >= 0x6000 && addr <= 0x7FFF) {
-    return this.ram[addr - 0x6000] & 0xFF;
-}
+
 
   switch (addr) {
 
@@ -4483,16 +4482,24 @@ ppuRead(addr) {
     this.chr[addr & 0x1FFF] = val;
   }
   cpuRead(addr) {
-    // 1. FDS RAM 領域: $6000 - $DFFF (32KB)
-    if (addr >= 0x6000 && addr <= 0xDFFF) {
-        return this.ram[addr - 0x6000];
-    }
-    // 2. BIOS ROM 領域: $E000 - $FFFF (8KB)
-    if (addr >= 0xE000) {
-        return this.bios[addr - 0xE000];
-    }
-    return 0;
+  // ★ I/O は絶対にここで触らない
+  if (addr >= 0x4020 && addr <= 0x403F) {
+    return 0; // Bus 側で処理させる
+  }
+
+  // FDS RAM
+  if (addr >= 0x6000 && addr <= 0xDFFF) {
+    return this.ram[addr - 0x6000];
+  }
+
+  // BIOS
+  if (addr >= 0xE000) {
+    return this.bios[addr - 0xE000];
+  }
+
+  return 0;
 }
+
 
 cpuWrite(addr, val) {
     // FDS RAM 領域への書き込み: $6000 - $DFFF
