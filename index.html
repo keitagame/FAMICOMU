@@ -4264,30 +4264,31 @@ reset() {
  tick(cycles) {
   if (!this.motorOn) return;
 
-  /* ---- ヘッドリセット処理 ---- */
+  /* ---- ヘッドリセット ---- */
   if (this.headAtReset) {
     this.headResetDelay -= cycles;
     if (this.headResetDelay <= 0) {
-      this.headAtReset = false;   // ★ BIOSが待っている遷移
-      this.transferCycles = 0;    // ★ 転送タイミングをここから数える
+      this.headAtReset = false;
+      this.transferCycles = 0;
     }
-    return; // ★ 重要：リセット中は転送しない
+    return; // ★ reset中は何もしない
   }
 
-  /* ---- データ転送 ---- */
+  /* ---- 転送タイミング ---- */
   this.transferCycles += cycles;
 
   if (this.transferCycles >= 150) {
     this.transferCycles -= 150;
 
+    // ★ ここが超重要
     if (!this.dataReady && this.diskPtr < this.disk.length) {
-      console.log("3");
       this.dataReady = true;
       this.irqFlag = true;
       this.bus.requestIRQ();
     }
   }
 }
+
 
 
 initBatteryRAM() {
