@@ -4062,13 +4062,16 @@ this.cartridge = null;
 
   cpuRead(addr) {
     addr &= 0xffff;
-    if (addr >= 0x6000 && addr <= 0x7FFF) {
-    }
+   if (this.fds && addr >= 0x4020 && addr <= 0x403F) {
+    return this.fds.ioRead(addr);
+  }
     if (this.fds) {
       // FDS I/O 領域を 0x4030 からにする
-      if (addr >= 0x4030 && addr <= 0x4033) {
-        return this.fds.ioRead(addr);
-      }
+
+
+     // ★ FDS I/O 全域を先に捕まえる
+
+
       // FDS RAM ($6000-$DFFF)
       if (addr >= 0x6000 && addr <= 0xDFFF) { // 範囲をDFFFまで広げる
         return this.fds.cpuRead(addr);
@@ -4238,9 +4241,11 @@ if (this.disk[0] === 0x46 && this.disk[1] === 0x44 && this.disk[2] === 0x53) {
     this.irqEnabled = false;
     this.bus.irqLine = false;
 
+this.headAtReset = true;
 
-    this.dataReady = true;
+    this.dataReady = false;
     this.irqFlag = false;
+this.headResetDelay = 1000000;
 this.reset();
   }
 reset() {
@@ -4257,19 +4262,29 @@ reset() {
     this.transferCycles = 0;
   }
  tick(cycles) {
-    if (!this.motorOn) return;
+
+    
+
+
+    this.headResetDelay -= cycles;
+
+    if (this.headResetDelay <= 0) {
+//console.log("0");
+      this.headAtReset = false; // ★ ここで初めて 1→0
+    }
+if (!this.motorOn) return;
 
     this.transferCycles += cycles;
 
     if (this.transferCycles >= 150) {
         this.transferCycles -= 150;
 if (this.diskPtr < this.disk.length) {
-  
-            this.dataReady = false; // BIOSが待っているフラグ
-            if (this.irqEnabled) {
+  console.log("3");
+            this.dataReady = true; // BIOSが待っているフラグ
+            //if (this.irqEnabled) {
                 this.irqFlag = true;
                 this.bus.requestIRQ();
-            }
+            //}
         }
     }
 }
@@ -4307,7 +4322,7 @@ if (addr >= 0x6000 && addr <= 0x7FFF) {
 
     case 0x4031: // ディスクステータス
   let s4031 = 0x00;
-
+console.log("1");
   if (this.irqFlag) s4031 |= 0x80;    // Bit7: IRQ
   if (this.dataReady) s4031 |= 0x02; // Bit1: Data Ready
   this.irqFlag = false;
@@ -4322,19 +4337,23 @@ case 0x4032: {
     // Bit 0: 0=Ready (挿入済み), 1=Not Ready
     // ここを 1 にすると BIOS は「ディスクを入れろ」と言い、
     // 0 にすると「Now Loading」に進みます。
-    if (!this.diskInserted) {
-        v |= 0x01; 
-    }
-
+   
+v &= ~0x01;
+if (this.headAtReset) v |= 0x02;
     // Bit 1: 0=スキャン中(ヘッドがデータ領域にある), 1=リセット位置
     // BIOS はここが 1 から 0 に変わることで「回転が安定した」と判断することがあります。
-    if (this.diskPtr === this.dataOffset) {
-        v |= 0x02;
-    } else {
-        // 読み込みが始まっている（ptrが進んでいる）なら 0 にする
-        v &= ~0x02;
-    }
+    //if (this.diskPtr === this.dataOffset) {
 
+   //     v |= 0x02;
+  //  } else {
+console.log("2");
+        // 読み込みが始まっている（ptrが進んでいる）なら 0 にする
+        //v |= 0x00;
+   // }
+console.log(
+    "PC", this.cpu.PC.toString(16),
+    "4032", v.toString(16)
+  );
     // Bit 2: 0=書き込み可, 1=書き込み禁止
     // v |= 0x04; // セーブできない場合はここをコメントアウト
 
@@ -4356,6 +4375,14 @@ case 0x4032: {
       //return 0x80;
       return 0x81; 
 case 0x4024:
+case 0x4025: {
+console.log("0.1");
+  let v = 0x00;
+  if (this.motorOn) v |= 0x01;     // bit0 = motor
+  if (this.irqEnabled) v |= 0x80;  // bit7 = IRQ enable
+  return v;
+}
+
 case 0x4026: // IRQ RESET
   
   this.irqFlag = false;
