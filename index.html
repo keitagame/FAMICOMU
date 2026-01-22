@@ -4295,6 +4295,7 @@ this.transferCycles = -1500000;
   if (this.transferCycles >= 200) {
     this.transferCycles -= 200;
 if (this.diskPtr >= this.disk.length) {
+console.log("aa");
     this.dataReady = false;
     this.irqFlag = false;
     this.bus.irqLine = false; // 割り込みを物理的に停止
