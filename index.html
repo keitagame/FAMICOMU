@@ -3807,7 +3807,7 @@ t[0x00] = function() {
     
           
         } catch (e) {
-            console.error('[APU] Audio init failed:', e);
+           
           }
         
         write(addr, value) {
@@ -4279,7 +4279,7 @@ if (this.diskWait > 0) {
 if (this.headAtReset) {
   this.headResetDelay -= cycles; 
   if (this.headResetDelay <= 0) {
-console.log("0.1");
+
     this.headAtReset = false;
 this.transferCycles = -1500000; 
   }
@@ -4295,7 +4295,7 @@ this.transferCycles = -1500000;
   if (this.transferCycles >= 200) {
     this.transferCycles -= 200;
 if (this.diskPtr >= this.disk.length) {
-console.log("aa");
+
     this.dataReady = false;
     this.irqFlag = false;
     this.bus.irqLine = false; // 割り込みを物理的に停止
@@ -4305,10 +4305,9 @@ console.log("aa");
 if (this.transferCycles < 0) return; 
     // ★ ここが超重要
     if (!this.dataReady && this.diskPtr < this.disk.length) {
-console.log("0.2");
+
       this.dataReady = true;
 //if (this.irqEnabled) {
-console.log("irq");
 
       //this.irqFlag = true;
       this.bus.requestIRQ();
@@ -4338,7 +4337,7 @@ ioRead(addr) {
 
 
   case 0x4030: { // データ読み込み
-console.log("4030");
+
   const data = this.disk[this.diskPtr] ?? 0x00;
 this.dataReady = false;
 
@@ -4358,7 +4357,7 @@ this.dataReady = false;
 
     case 0x4031: // ディスクステータス
   let s4031 = 0x00;
-console.log("1");
+
   if (this.irqFlag) s4031 |= 0x80;    // Bit7: IRQ
   if (this.dataReady) s4031 |= 0x02; // Bit1: Data Ready
  // this.irqFlag = false;
@@ -4383,14 +4382,7 @@ if (this.headAtReset) v |= 0x02;
 
    //     v |= 0x02;
   //  } else {
-console.log("2");
-        // 読み込みが始まっている（ptrが進んでいる）なら 0 にする
-        //v |= 0x00;
-   // }
-console.log(
-    "PC", this.cpu.PC.toString(16),
-    "4032", v.toString(16)
-  );
+
     // Bit 2: 0=書き込み可, 1=書き込み禁止
     // v |= 0x04; // セーブできない場合はここをコメントアウト
 
@@ -4413,7 +4405,7 @@ console.log(
       return 0x81; 
 case 0x4024:
 case 0x4025: {
-console.log("0.1");
+
   let v = 0x00;
   if (this.motorOn) v |= 0x01;     // bit0 = motor
   if (this.irqEnabled) v |= 0x80;  // bit7 = IRQ enable
@@ -4708,7 +4700,7 @@ while (!this.ppu.consumeFrameFlag()) {
     }
 
     if (++guard > 10_000_000) {
-        console.warn("Infinite loop detected in NES.stepFrame");
+        
         break;
     }
   }
@@ -4744,7 +4736,7 @@ while (!this.ppu.consumeFrameFlag()) {
     }
 
     if (++guard > 10_000_000) {
-        console.warn("Infinite loop detected in NES.stepFrame");
+        
         break;
     }
   }
@@ -4773,7 +4765,7 @@ while (!this.ppu.consumeFrameFlag()) {
         if (!document.fullscreenElement) {
           // キャンバスをフルスクリーンに
           canvas.requestFullscreen().catch((err) => {
-            console.error(`フルスクリーンにできません: ${err.message}`);
+           
           });
         } else {
           // フルスクリーン解除
