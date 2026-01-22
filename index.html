@@ -4263,6 +4263,12 @@ reset() {
     this.transferCycles = 0;
   }
  tick(cycles) {
+if (this.diskPtr >= this.disk.length) {
+    this.motorOn = false; // ディスク末尾に達したら強制停止（安全策）
+    this.dataReady = false;
+    this.bus.irqLine = false;
+    return;
+}
   if (!this.motorOn) return;
 if (this.diskWait > 0) {
     this.diskWait--;
@@ -4275,25 +4281,35 @@ if (this.headAtReset) {
   if (this.headResetDelay <= 0) {
 console.log("0.1");
     this.headAtReset = false;
-this.transferCycles = -10000000; 
+this.transferCycles = -1500000; 
   }
   return;
 }
+// tick内
+
 
 
   /* ---- 転送タイミング ---- */
   this.transferCycles += cycles;
 
-  if (this.transferCycles >= 150) {
-    this.transferCycles -= 150;
+  if (this.transferCycles >= 200) {
+    this.transferCycles -= 200;
+if (this.diskPtr >= this.disk.length) {
+    this.dataReady = false;
+    this.irqFlag = false;
+    this.bus.irqLine = false; // 割り込みを物理的に停止
+    return; // これ以上何もしない
+  }
 
+if (this.transferCycles < 0) return; 
     // ★ ここが超重要
     if (!this.dataReady && this.diskPtr < this.disk.length) {
 console.log("0.2");
       this.dataReady = true;
 //if (this.irqEnabled) {
-console.log("a");
-      this.irqFlag = true;
+console.log("irq");
+
+      //this.irqFlag = true;
       this.bus.requestIRQ();
     //}
       //this.irqFlag = true;
@@ -4346,6 +4362,7 @@ console.log("1");
   if (this.dataReady) s4031 |= 0x02; // Bit1: Data Ready
  // this.irqFlag = false;
   //this.bus.irqLine = false;
+  s4031 |= 0x01;
   return s4031;
 
 case 0x4032: {
@@ -4425,17 +4442,27 @@ ioWrite(addr, val) {
    case 0x4025:
   this.motorOn = (val & 0x01) !== 0; // ★ bit1
 
-  this.irqEnabled = (val & 0x80) !== 0;  // bit1
-  const reset = (val & 0x04) !== 0;      // bit2
+ 
+  const reset = (val & 0x02) !== 0;      // bit2
 
-  if (reset) {
-    this.diskPtr = this.dataOffset; 
-
-
+ 
+ if ((val & 0x02) === 0) {
+    this.headAtReset = true;
+    this.diskPtr = this.dataOffset;
+    this.headResetDelay = 90000; // BIOSがホーム位置を確認できる十分な時間
     this.dataReady = false;
     this.irqFlag = false;
     this.bus.irqLine = false;
   }
+
+  // ★重要：Bit 7 が IRQ イネーブル
+  this.irqEnabled = (val & 0x80) !== 0;
+  
+  if (!this.irqEnabled) {
+    this.irqFlag = false;
+    this.bus.irqLine = false;
+  }
+
   if (val & 0x04) {
         //this.diskPtr = this.dataOffset;
         this.dataReady = false;
@@ -4449,10 +4476,12 @@ if (this.motorOn) {
   break;
 
 
-    case 0x4026: // IRQ reset
-      this.irqFlag = false;
-      
-      break;
+    // ioRead(0x4026) または ioWrite(0x4026) の両方でクリアを試みる
+case 0x4026:
+  this.irqFlag = false;
+  this.bus.irqLine = false; // CPUへの割り込み信号を確実に下げる
+  return 0; // Readの場合は0
+
   
 
 case 0x4020: // IRQ制御
