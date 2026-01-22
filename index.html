@@ -4246,7 +4246,7 @@ this.diskWait = 0;
 
     this.dataReady = false;
     this.irqFlag = false;
-this.headResetDelay = 50;
+this.headResetDelay = 2000;
 this.reset();
   }
 reset() {
@@ -4271,9 +4271,11 @@ if (this.diskWait > 0) {
   /* ---- ヘッドリセット ---- */
   // tick()
 if (this.headAtReset) {
-  this.headResetDelay--;
+  this.headResetDelay -= cycles; 
   if (this.headResetDelay <= 0) {
+console.log("0.1");
     this.headAtReset = false;
+this.transferCycles = -2000; 
   }
   return;
 }
@@ -4321,6 +4323,9 @@ ioRead(addr) {
 console.log("4030");
   const data = this.disk[this.diskPtr] ?? 0x00;
 this.dataReady = false;
+
+        this.irqFlag = false;   // ★重要：IRQを解除
+        this.bus.irqLine = false; 
  if (this.motorOn) {
         this.diskPtr++;
         this.dataReady = false; // ★重要：読んだのでフラグを下ろす
@@ -4328,7 +4333,7 @@ this.dataReady = false;
         this.bus.irqLine = false; 
     }
  
-  this.irqFlag = false;
+ 
  
   return data;
 }
@@ -4350,8 +4355,8 @@ case 0x4032: {
     // Bit 0: 0=Ready (挿入済み), 1=Not Ready
     // ここを 1 にすると BIOS は「ディスクを入れろ」と言い、
     // 0 にすると「Now Loading」に進みます。
-   
-v &= ~0x01;
+   if (!this.diskInserted) v |= 0x01;
+//v &= ~0x01;
 if (this.headAtReset) v |= 0x02;
     // Bit 1: 0=スキャン中(ヘッドがデータ領域にある), 1=リセット位置
     // BIOS はここが 1 から 0 に変わることで「回転が安定した」と判断することがあります。
