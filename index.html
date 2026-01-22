@@ -4275,7 +4275,7 @@ if (this.headAtReset) {
   if (this.headResetDelay <= 0) {
 console.log("0.1");
     this.headAtReset = false;
-this.transferCycles = -2000; 
+this.transferCycles = -10000000; 
   }
   return;
 }
@@ -4291,10 +4291,10 @@ this.transferCycles = -2000;
     if (!this.dataReady && this.diskPtr < this.disk.length) {
 console.log("0.2");
       this.dataReady = true;
-if (this.irqEnabled) {
+//if (this.irqEnabled) {
       this.irqFlag = true;
       this.bus.requestIRQ();
-    }
+    //}
       //this.irqFlag = true;
       //this.bus.requestIRQ();
 this.diskWait = 150;
