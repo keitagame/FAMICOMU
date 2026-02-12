@@ -1901,71 +1901,122 @@ class Mapper73 extends IMapper { // VRC3 - PRG only
     if (this.chrIsRAM && addr < 0x2000) this.chr[addr] = val & 0xFF;
   }
 }
-
 class Mapper76 extends IMapper {
   constructor(cart, bus) {
     super(cart, bus);
 
-    // PRG: 8KB banks
-    this.prgBanks8 = this.prg.length / 0x2000;
-    this.prgMap = [0, 1, this.prgBanks8 - 2, this.prgBanks8 - 1];
+    /* ================= PRG ================= */
 
-    // CHR: 4KB x 2
-    this.chrBanks4 = Math.max(1, this.chr.length / 0x1000);
-    this.chrBank0 = 0;
-    this.chrBank1 = 1;
+    // 8KB banks
+    this.prgBanks8 = this.prg.length >> 13; // /0x2000
+    this.prgMap = new Uint8Array(4);
+
+    /* ================= CHR ================= */
+
+    // 2KB banks (Mapper76 = coarse banking)
+    this.chrBanks2k = Math.max(1, this.chr.length >> 11); // /0x800
+    this.chrMap = new Uint32Array(4); // base addresses for 2KB slots
+
+    /* ================= Registers ================= */
+
+    this.regSelect = 0;
+    this.reg = new Uint8Array(8);
+
+    this.reset();
   }
+
+  /* ================= RESET ================= */
+
+  reset() {
+    // Clear registers
+    for (let i = 0; i < 8; i++) {
+      this.reg[i] = 0;
+    }
+
+    // Initial PRG mapping
+    this.prgMap[0] = 0;
+    this.prgMap[1] = 1;
+    this.prgMap[2] = this.prgBanks8 - 2;
+    this.prgMap[3] = this.prgBanks8 - 1;
+
+    // Initial CHR mapping
+    for (let i = 0; i < 4; i++) {
+      this.chrMap[i] = (i % this.chrBanks2k) << 11;
+    }
+  }
+
+  /* ================= CPU ================= */
 
   cpuRead(addr) {
     if (addr < 0x8000) return 0;
 
     const slot = (addr - 0x8000) >> 13; // 8KB slot
     const bank = this.prgMap[slot] % this.prgBanks8;
-    const base = bank * 0x2000;
-    return this.prg[base + (addr & 0x1fff)];
+    const base = bank << 13;
+
+    return this.prg[base + (addr & 0x1FFF)];
   }
 
   cpuWrite(addr, val) {
-    val &= 0xff;
+    val &= 0xFF;
 
-    switch (addr & 0xe001) {
+    // Mask: $E001
+    switch (addr & 0xE001) {
       case 0x8000:
-        this.prgMap[0] = val & 0x3f;
+        // Register select (0-7)
+        this.regSelect = val & 7;
         break;
+
       case 0x8001:
-        this.prgMap[1] = val & 0x3f;
-        break;
-      case 0xA000:
-        this.chrBank0 = val & 0x3f;
-        break;
-      case 0xA001:
-        this.chrBank1 = val & 0x3f;
+        // Write to selected register
+        this.reg[this.regSelect] = val;
+        this.updateBanks();
         break;
     }
   }
 
+  /* ================= BANK UPDATE ================= */
+
+  updateBanks() {
+    /* ===== PRG ===== */
+    // R6 -> $8000
+    // R7 -> $A000
+    // $C000 = fixed -2
+    // $E000 = fixed -1
+
+    this.prgMap[0] = this.reg[6] % this.prgBanks8;
+    this.prgMap[1] = this.reg[7] % this.prgBanks8;
+    this.prgMap[2] = this.prgBanks8 - 2;
+    this.prgMap[3] = this.prgBanks8 - 1;
+
+    /* ===== CHR ===== */
+    // R2-R5 each control 2KB
+    for (let i = 0; i < 4; i++) {
+      const bank2k = this.reg[2 + i] % this.chrBanks2k;
+      this.chrMap[i] = bank2k << 11; // 2KB = 0x800
+    }
+  }
+
+  /* ================= PPU ================= */
+
   ppuRead(addr) {
-    if (addr < 0x1000) {
-      const base = (this.chrBank0 % this.chrBanks4) * 0x1000;
-      return this.chr[base + addr];
-    }
-    if (addr < 0x2000) {
-      const base = (this.chrBank1 % this.chrBanks4) * 0x1000;
-      return this.chr[base + (addr - 0x1000)];
-    }
-    return 0;
+    if (addr >= 0x2000) return 0;
+
+    const slot = addr >> 11; // 2KB slot (0-3)
+    const base = this.chrMap[slot];
+
+    return this.chr[base + (addr & 0x7FF)];
   }
 
   ppuWrite(addr, val) {
-    if (this.chrIsRAM && addr < 0x2000) {
-      if (addr < 0x1000) {
-        const base = (this.chrBank0 % this.chrBanks4) * 0x1000;
-        this.chr[base + addr] = val & 0xff;
-      } else {
-        const base = (this.chrBank1 % this.chrBanks4) * 0x1000;
-        this.chr[base + (addr - 0x1000)] = val & 0xff;
-      }
-    }
+    if (!this.chrIsRAM || addr >= 0x2000) return;
+
+    val &= 0xFF;
+
+    const slot = addr >> 11;
+    const base = this.chrMap[slot];
+
+    this.chr[base + (addr & 0x7FF)] = val;
   }
 }
 
@@ -4657,7 +4708,7 @@ let sameCount = 0;
         }
         loadCartridge(bytes) {
           const cart = new Cartridge(bytes);
-
+console.log(cart.mapper);
            if (!cart.valid) throw new Error("Unsupported ROM");
           this.bus.insertCartridge(cart);
           
